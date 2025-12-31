@@ -3,7 +3,7 @@ Interfaz base para los engines de ejecución.
 Define el contrato que deben cumplir todos los engines.
 """
 from abc import ABC, abstractmethod
-from ..core.common.state import TrafficState
+from ...core.common.state import TrafficState
 
 
 class BaseEngine(ABC):

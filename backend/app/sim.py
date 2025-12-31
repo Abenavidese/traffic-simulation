@@ -168,7 +168,9 @@ def main():
     )
     
     # Mostrar información del sistema
-    from ...system_info import mostrar_info_sistema
+    import sys
+    sys.path.insert(0, 'C:\\Users\\EleXc\\Music\\paralela-multi-hilos')
+    from system_info import mostrar_info_sistema
     mostrar_info_sistema()
     
     # Ejecutar simulación
