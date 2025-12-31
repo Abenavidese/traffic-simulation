@@ -45,6 +45,10 @@ class ThreadingEngine(BaseEngine):
         
         # Contador de vehículos
         self._next_vehicle_id = 0
+        
+        # Sistema de eventos y tránsito
+        self._eventos_tick: List[Dict] = []
+        self._vehiculos_en_transito: Dict[Via, List[Dict]] = {}
 
     def start(self) -> None:
         """Inicializa el sistema."""
@@ -78,21 +82,58 @@ class ThreadingEngine(BaseEngine):
             if not self._running:
                 raise RuntimeError("Engine no está corriendo. Llama start() primero.")
             
+            # Limpiar eventos del tick anterior
+            self._eventos_tick = []
+            self._vehiculos_en_transito = {}
+            
+            # Guardar colores anteriores para detectar cambios
+            colores_anteriores = {via: sem.color for via, sem in self.semaforos.items()}
+            
             # 1. Controlador decide el plan de luces
             plan = self.controlador.avanzar_tick()
             
-            # 2. Aplicar colores a semáforos
+            # 2. Aplicar colores a semáforos y detectar cambios
             for via, color in plan.items():
+                color_anterior = colores_anteriores[via]
                 self.semaforos[via].set_color(color)
+                
+                # Evento: Cambio de semáforo
+                if color_anterior != color:
+                    self._eventos_tick.append({
+                        "tipo": "cambio_semaforo",
+                        "via": via.name,
+                        "color_anterior": color_anterior.name,
+                        "color_nuevo": color.name,
+                        "icono": self._get_icono_color(color.name)
+                    })
             
-            # 3. Simular llegada de vehículos
+            # 3. Simular llegada de vehículos (con eventos)
             self._simular_llegada_vehiculos()
             
-            # 4. Ejecutar tick en cada semáforo
+            # 4. Ejecutar tick en cada semáforo (con eventos y tránsito)
             for via, semaforo in self.semaforos.items():
                 vehiculos_cruzados = semaforo.tick()
                 if vehiculos_cruzados:
+                    # Registrar estadísticas
                     self.stats.registrar_vehiculos(vehiculos_cruzados, via.name)
+                    
+                    # Simular vehículos en tránsito (progreso de cruce)
+                    for idx, vehiculo in enumerate(vehiculos_cruzados):
+                        progreso = (idx + 1) / len(vehiculos_cruzados)
+                        if via not in self._vehiculos_en_transito:
+                            self._vehiculos_en_transito[via] = []
+                        self._vehiculos_en_transito[via].append({
+                            "id": vehiculo.id,
+                            "progreso": progreso,
+                        })
+                        
+                        # Evento: Vehículo despachado
+                        self._eventos_tick.append({
+                            "tipo": "vehiculo_despachado",
+                            "via": via.name,
+                            "vehiculo_id": vehiculo.id,
+                            "icono": "🚗✓"
+                        })
             
             # 5. Construir estado actual
             return self._construir_estado()
@@ -104,6 +145,18 @@ class ThreadingEngine(BaseEngine):
                 vehiculo = Vehiculo(id=self._next_vehicle_id)
                 self._next_vehicle_id += 1
                 semaforo.agregar_vehiculo(vehiculo)
+                
+                # Evento: Vehículo llegó
+                self._eventos_tick.append({
+                    "tipo": "vehiculo_llego",
+                    "via": via.name,
+                    "vehiculo_id": vehiculo.id,
+                    "icono": "🚗→"
+                })
+
+    def _get_icono_color(self, color: str) -> str:
+        """Retorna el emoji correspondiente al color del semáforo."""
+        return {"VERDE": "🟢", "AMARILLO": "🟡", "ROJO": "🔴"}.get(color, "⚪")
 
     def _construir_estado(self) -> TrafficState:
         """Construye el estado actual del sistema."""
@@ -155,8 +208,8 @@ class ThreadingEngine(BaseEngine):
             info_sistema=info_sistema,
             # Nuevos campos
             vehiculos_detalle=vehiculos_detalle,
-            vehiculos_en_transito={},  # TODO: Implementar en futuro
-            eventos_tick={},  # TODO: Implementar en futuro
+            vehiculos_en_transito={via.name: transito for via, transito in self._vehiculos_en_transito.items()},
+            eventos_tick={"eventos": self._eventos_tick},
             timing_fase=timing_fase,
             configuracion=configuracion,
         )
