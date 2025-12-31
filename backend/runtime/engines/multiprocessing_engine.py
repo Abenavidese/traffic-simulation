@@ -272,6 +272,18 @@ class MultiprocessingEngine(BaseEngine):
             for via in Via
         }
         
+        # NUEVO: Timing de fase
+        timing_fase = self.controlador.get_timing_fase()
+        
+        # NUEVO: Configuración
+        configuracion = {
+            "duracion_verde": self.config.duracion_verde,
+            "duracion_amarillo": self.config.duracion_amarillo,
+            "capacidad_cruce": self.config.capacidad_cruce_por_tick,
+            "probabilidad_llegada": self.config.probabilidad_llegada,
+            "intervalo_tick": self.config.intervalo_tick,
+        }
+        
         import sys
         info_sistema = {
             "motor": "Multiprocessing",
@@ -287,6 +299,12 @@ class MultiprocessingEngine(BaseEngine):
             colas=colas,
             estadisticas=self.stats.get_resumen(),
             info_sistema=info_sistema,
+            # Nuevos campos
+            vehiculos_detalle={},  # TODO: Requiere IPC adicional
+            vehiculos_en_transito={},  # TODO: Implementar en futuro
+            eventos_tick={},  # TODO: Implementar en futuro
+            timing_fase=timing_fase,
+            configuracion=configuracion,
         )
 
     def get_state(self) -> TrafficState:

@@ -91,5 +91,26 @@ class Semaforo:
             "vehiculos_cruzados": self._vehiculos_cruzados_total,
         }
 
+    def get_vehiculos_detalle(self) -> list:
+        """
+        Retorna lista detallada de vehículos en cola.
+        
+        Para cada vehículo incluye:
+        - id: Identificador único
+        - posicion: Posición en la cola (0 = primero)
+        - esperando_desde: Tiempo de espera actual
+        
+        Returns:
+            Lista de diccionarios con detalles de cada vehículo
+        """
+        return [
+            {
+                "id": vehiculo.id,
+                "posicion": idx,
+                "esperando_desde": vehiculo.tiempo_espera_total,
+            }
+            for idx, vehiculo in enumerate(self.cola)
+        ]
+
     def __repr__(self) -> str:
         return f"Semaforo({self.via.name}, {self.color.name}, cola={self.tamano_cola})"

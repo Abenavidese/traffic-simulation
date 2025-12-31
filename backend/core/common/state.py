@@ -32,6 +32,22 @@ class TrafficState:
     
     # Información del sistema
     info_sistema: Dict[str, str] = field(default_factory=dict)
+    
+    # NUEVOS: Datos para animaciones frontend 🎨
+    # Detalles individuales de vehículos en colas
+    vehiculos_detalle: Dict[str, list] = field(default_factory=dict)
+    
+    # Vehículos actualmente cruzando la intersección
+    vehiculos_en_transito: Dict[str, list] = field(default_factory=dict)
+    
+    # Eventos ocurridos en este tick
+    eventos_tick: Dict[str, list] = field(default_factory=dict)
+    
+    # Información de timing de fase actual
+    timing_fase: Dict[str, int] = field(default_factory=dict)
+    
+    # Configuración de la simulación
+    configuracion: Dict[str, any] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         """
@@ -48,6 +64,12 @@ class TrafficState:
             "colas": self.colas,
             "estadisticas": self.estadisticas,
             "info_sistema": self.info_sistema,
+            # Nuevos campos
+            "vehiculos_detalle": self.vehiculos_detalle,
+            "vehiculos_en_transito": self.vehiculos_en_transito,
+            "eventos_tick": self.eventos_tick,
+            "timing_fase": self.timing_fase,
+            "configuracion": self.configuracion,
         }
 
     @classmethod
@@ -69,6 +91,12 @@ class TrafficState:
             colas=data.get("colas", {}),
             estadisticas=data.get("estadisticas", {}),
             info_sistema=data.get("info_sistema", {}),
+            # Nuevos campos con defaults
+            vehiculos_detalle=data.get("vehiculos_detalle", {}),
+            vehiculos_en_transito=data.get("vehiculos_en_transito", {}),
+            eventos_tick=data.get("eventos_tick", {}),
+            timing_fase=data.get("timing_fase", {}),
+            configuracion=data.get("configuracion", {}),
         )
 
     def __repr__(self) -> str:

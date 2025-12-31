@@ -137,5 +137,32 @@ class ControladorTrafico:
             "ticks_en_fase": self._ticks_en_fase,
         }
 
+
+    def get_timing_fase(self) -> dict:
+        """
+        Retorna información de timing de la fase actual.
+        
+        Útil para mostrar barras de progreso o countdown en la GUI.
+        
+        Returns:
+            Diccionario con:
+            - fase_actual: Nombre de la fase
+            - ticks_en_fase: Ticks transcurridos en la fase
+            - ticks_restantes: Ticks que faltan para cambiar
+            - duracion_total: Duración total de la fase
+        """
+        # Determinar duración según la fase
+        if "VERDE" in self._fase_actual:
+            duracion = self.duracion_verde
+        else:  # AMARILLO
+            duracion = self.duracion_amarillo
+        
+        return {
+            "fase_actual": self._fase_actual,
+            "ticks_en_fase": self._ticks_en_fase,
+            "ticks_restantes": max(0, duracion - self._ticks_en_fase),
+            "duracion_total": duracion,
+        }
+
     def __repr__(self) -> str:
         return f"ControladorTrafico(ciclo={self._ciclo_actual}, fase={self._fase_actual})"
