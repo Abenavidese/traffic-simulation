@@ -76,6 +76,38 @@ class TrafficGUI:
         )
         self.btn_stop.pack(fill=tk.X, pady=(20, 5))
 
+        # --- Panel de Estadísticas ---
+        self.stats_frame = tk.LabelFrame(
+            self.sidebar_frame, text=" ESTADÍSTICAS ", 
+            fg="white", bg="#3c3f41", font=("Arial", 10, "bold"),
+            padx=10, pady=10, relief=tk.GROOVE
+        )
+        self.stats_frame.pack(fill=tk.X, pady=20)
+
+        # Labels de estadísticas
+        self.label_tick = self._create_stat_label("Tick:", "0")
+        self.label_ciclo = self._create_stat_label("Ciclo:", "0")
+        self.label_total = self._create_stat_label("Total Veh.:", "0")
+        self.label_espera = self._create_stat_label("Espera Prom.:", "0.00s")
+
+        # --- Barra de Progreso de Fase ---
+        self.phase_frame = tk.LabelFrame(self.sidebar_frame, text=" FASE ACTUAL ", fg="white", bg="#3c3f41", font=("Arial", 10, "bold"), padx=10, pady=10)
+        self.phase_frame.pack(fill=tk.X, pady=10)
+        
+        self.label_fase_nombre = tk.Label(self.phase_frame, text="ESPERANDO...", fg="#ffcc00", bg="#3c3f41", font=("Arial", 9, "bold"))
+        self.label_fase_nombre.pack()
+        
+        self.canvas_phase = tk.Canvas(self.phase_frame, height=15, bg="#2b2b2b", highlightthickness=0)
+        self.canvas_phase.pack(fill=tk.X, pady=5)
+        self.phase_bar = self.canvas_phase.create_rectangle(0, 0, 0, 15, fill="#4db6ac", outline="")
+
+        # --- Log de Eventos ---
+        self.log_frame = tk.LabelFrame(self.sidebar_frame, text=" EVENTOS (LOG) ", fg="white", bg="#3c3f41", font=("Arial", 10, "bold"), padx=5, pady=5)
+        self.log_frame.pack(fill=tk.BOTH, expand=True, pady=10)
+        
+        self.log_list = tk.Listbox(self.log_frame, bg="#1e1e1e", fg="#00ff00", font=("Consolas", 8), borderwidth=0, highlightthickness=0)
+        self.log_list.pack(fill=tk.BOTH, expand=True)
+
         # Dibujar los elementos estáticos (calles)
         self._draw_static_elements()
 
@@ -148,17 +180,78 @@ class TrafficGUI:
 
     def _update_ui(self, state):
         """Actualiza todos los elementos gráficos con el nuevo estado."""
-        # Limpiar vehículos previos (para redibujar)
+        # Limpiar elementos dinámicos
         self.canvas.delete("vehiculo")
+        self.canvas.delete("transito")
 
-        # Actualizar colores de semáforos
+        # 1. Actualizar colores de semáforos
         COLORS = {"VERDE": "#00FF00", "AMARILLO": "#FFFF00", "ROJO": "#FF0000"}
         for via, color_name in state.luces.items():
             if via in self.semaforos_graficos:
                 self.canvas.itemconfig(self.semaforos_graficos[via], fill=COLORS.get(color_name, "#ffffff"))
 
-        # Dibujar vehículos en las colas
+        # 2. Dibujar vehículos en las colas
         self._draw_vehicles(state.vehiculos_detalle)
+        
+        # 3. Dibujar vehículos CRUZANDO (Movimiento)
+        self._draw_transit(state.vehiculos_en_transito)
+
+        # 4. Actualizar estadísticas
+        stats = state.estadisticas
+        self.label_tick.config(text=str(state.tick))
+        self.label_ciclo.config(text=str(state.ciclo))
+        self.label_total.config(text=str(stats.get('total_vehiculos', 0)))
+        espera = stats.get('tiempo_espera_promedio', 0)
+        self.label_espera.config(text=f"{espera:.2f}s")
+        
+        # 5. Actualizar Barra de Fase y Nombre
+        timing = state.timing_fase
+        self.label_fase_nombre.config(text=timing['fase_actual'])
+        progreso = timing['ticks_en_fase'] / timing['duracion_total']
+        self.canvas_phase.coords(self.phase_bar, 0, 0, progreso * 200, 15) # 200 es aprox el ancho
+
+        # 6. Actualizar Log de Eventos
+        eventos = state.eventos_tick.get("eventos", [])
+        for ev in eventos:
+            msg = f"[{state.tick}] {ev.get('icono', '')} {ev['via']}: {ev['tipo'].replace('vehiculo_', '')}"
+            self.log_list.insert(0, msg)
+            if self.log_list.size() > 50: self.log_list.delete(50, tk.END)
+
+    def _create_stat_label(self, text, initial_value):
+        """Crea un par de etiquetas (nombre: valor) en el panel de estadísticas."""
+        container = tk.Frame(self.stats_frame, bg="#3c3f41")
+        container.pack(fill=tk.X, pady=2)
+        
+        tk.Label(container, text=text, fg="#aaaaaa", bg="#3c3f41", font=("Arial", 9)).pack(side=tk.LEFT)
+        val_label = tk.Label(container, text=initial_value, fg="#4db6ac", bg="#3c3f41", font=("Arial", 9, "bold"))
+        val_label.pack(side=tk.RIGHT)
+        return val_label
+
+    def _draw_transit(self, vehiculos_en_transito):
+        """Anima los vehículos que están cruzando la intersección."""
+        # Rutas de cruce: (x_start, y_start, x_end, y_end)
+        ROUTES = {
+            "NORTE": (300, 230, 300, 370), # Baja
+            "SUR":   (300, 370, 300, 230), # Sube
+            "ESTE":  (370, 300, 230, 300), # Va a la izquierda
+            "OESTE": (230, 300, 370, 300)  # Va a la derecha
+        }
+
+        for via, vehiculos in vehiculos_en_transito.items():
+            if via not in ROUTES: continue
+            x1, y1, x2, y2 = ROUTES[via]
+            
+            for v in vehiculos:
+                prog = v['progreso']
+                # Interpolar posición
+                x = x1 + (x2 - x1) * prog
+                y = y1 + (y2 - y1) * prog
+                
+                self.canvas.create_oval(
+                    x-10, y-10, x+10, y+10,
+                    fill="#2ecc71", outline="white", width=2,
+                    tags="transito"
+                )
 
     def _draw_vehicles(self, vehiculos_detalle):
         """Dibuja los vehículos esperando en cada vía."""
