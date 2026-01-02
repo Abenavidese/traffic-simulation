@@ -48,7 +48,46 @@ class TrafficGUI:
         # Dibujar los elementos estáticos (calles)
         self._draw_static_elements()
 
-        # Próximo paso: Semáforos Gráficos
+        # --- Elementos Dinámicos ---
+        # Diccionario para guardar las referencias de los semáforos en el canvas
+        self.semaforos_graficos = {}
+        self._draw_traffic_lights()
+
+        # Próximo paso: Botones de Control
+
+    def _draw_traffic_lights(self):
+        """Dibuja los 4 semáforos en sus posiciones iniciales (Rojo)."""
+        # Posiciones estratégicas en las esquinas de la intersección
+        # Ajustadas para estar a la derecha de cada vía de entrada
+        POSITIONS = {
+            "NORTE": (370, 180),
+            "SUR":   (190, 380),
+            "ESTE":  (380, 370),
+            "OESTE": (180, 190)
+        }
+
+        for via, (x, y) in POSITIONS.items():
+            # Dibujar el "poste" o fondo del semáforo
+            self.canvas.create_rectangle(x-5, y-5, x+25, y+25, fill="#111111", outline="#555555")
+            
+            # Dibujar la luz (inicialmente roja)
+            luz = self.canvas.create_oval(
+                x, y, x+20, y+20,
+                fill="#ff0000", # Rojo
+                outline="#333333",
+                tags=f"luz_{via}"
+            )
+            
+            # Guardar referencia para actualizar el color después
+            self.semaforos_graficos[via] = luz
+            
+            # Etiqueta de la vía
+            self.canvas.create_text(
+                x+10, y-15,
+                text=via,
+                fill="white",
+                font=("Arial", 8, "bold")
+            )
 
     def _draw_static_elements(self):
         """Dibuja las calles y líneas de la intersección."""
