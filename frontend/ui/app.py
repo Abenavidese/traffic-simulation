@@ -45,7 +45,45 @@ class TrafficGUI:
         )
         self.sidebar_title.pack(pady=(0, 20))
 
-        # Próximo paso: Dibujar Infraestructura Vial
+        # Dibujar los elementos estáticos (calles)
+        self._draw_static_elements()
+
+        # Próximo paso: Semáforos Gráficos
+
+    def _draw_static_elements(self):
+        """Dibuja las calles y líneas de la intersección."""
+        # Colores
+        color_asfalto = "#333333"
+        color_linea = "#ffffff"
+        color_linea_doble = "#ffcc00" # Amarillo para la doble línea central
+
+        w, h = 600, 600
+        road_width = 120 # Ancho de la calle
+        
+        # 1. Fondo de asfalto (Intersección central)
+        # Calle Horizontal
+        self.canvas.create_rectangle(0, (h/2) - (road_width/2), w, (h/2) + (road_width/2), fill=color_asfalto, outline="")
+        # Calle Vertical
+        self.canvas.create_rectangle((w/2) - (road_width/2), 0, (w/2) + (road_width/2), h, fill=color_asfalto, outline="")
+
+        # 2. Líneas Centrales (Doble línea amarilla)
+        # Horizontal
+        self.canvas.create_line(0, h/2 - 2, w, h/2 - 2, fill=color_linea_doble, width=2)
+        self.canvas.create_line(0, h/2 + 2, w, h/2 + 2, fill=color_linea_doble, width=2)
+        
+        # Vertical
+        self.canvas.create_line(w/2 - 2, 0, w/2 - 2, h, fill=color_linea_doble, width=2)
+        self.canvas.create_line(w/2 + 2, 0, w/2 + 2, h, fill=color_linea_doble, width=2)
+
+        # 3. Líneas de detención (Blancas)
+        # Norte
+        self.canvas.create_line(w/2 - road_width/2, h/2 - road_width/2 - 5, w/2 + road_width/2, h/2 - road_width/2 - 5, fill=color_linea, width=4)
+        # Sur
+        self.canvas.create_line(w/2 - road_width/2, h/2 + road_width/2 + 5, w/2 + road_width/2, h/2 + road_width/2 + 5, fill=color_linea, width=4)
+        # Este
+        self.canvas.create_line(w/2 + road_width/2 + 5, h/2 - road_width/2, w/2 + road_width/2 + 5, h/2 + road_width/2, fill=color_linea, width=4)
+        # Oeste
+        self.canvas.create_line(w/2 - road_width/2 - 5, h/2 - road_width/2, w/2 - road_width/2 - 5, h/2 + road_width/2, fill=color_linea, width=4)
 
 if __name__ == "__main__":
     root = tk.Tk()
