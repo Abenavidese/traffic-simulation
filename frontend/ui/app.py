@@ -5,6 +5,10 @@ import os
 # Asegurar que el backend sea importable
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
+from backend.app.config import ConfiguracionSimulacion
+from backend.runtime.engines.threading_engine import ThreadingEngine
+from backend.runtime.engines.multiprocessing_engine import MultiprocessingEngine
+
 class TrafficGUI:
     """Clase principal de la interfaz gráfica."""
     
@@ -13,6 +17,10 @@ class TrafficGUI:
         self.root.title(" Simulación de Tráfico - Cuenca")
         self.root.geometry("900x700")
         self.root.configure(bg="#2b2b2b")
+        
+        # Estado de la simulación
+        self.engine = None
+        self.running = False
         
         # --- Contenedores Principales ---
         # Frame izquierdo para el canvas (Simulación)
@@ -45,6 +53,29 @@ class TrafficGUI:
         )
         self.sidebar_title.pack(pady=(0, 20))
 
+        # Botones de inicio
+        self.btn_threading = tk.Button(
+            self.sidebar_frame, text="▶️ Iniciar Hilos", 
+            command=self.start_threading, bg="#4CAF50", fg="white", 
+            font=("Arial", 10, "bold"), pady=10, relief=tk.FLAT, cursor="hand2"
+        )
+        self.btn_threading.pack(fill=tk.X, pady=5)
+
+        self.btn_multiproc = tk.Button(
+            self.sidebar_frame, text="▶️ Iniciar Procesos", 
+            command=self.start_multiprocessing, bg="#2196F3", fg="white", 
+            font=("Arial", 10, "bold"), pady=10, relief=tk.FLAT, cursor="hand2"
+        )
+        self.btn_multiproc.pack(fill=tk.X, pady=5)
+
+        self.btn_stop = tk.Button(
+            self.sidebar_frame, text="⏹️ Detener", 
+            command=self.stop_simulation, bg="#f44336", fg="white", 
+            font=("Arial", 10, "bold"), pady=10, relief=tk.FLAT, cursor="hand2",
+            state=tk.DISABLED
+        )
+        self.btn_stop.pack(fill=tk.X, pady=(20, 5))
+
         # Dibujar los elementos estáticos (calles)
         self._draw_static_elements()
 
@@ -54,6 +85,115 @@ class TrafficGUI:
         self._draw_traffic_lights()
 
         # Próximo paso: Botones de Control
+
+    def start_threading(self):
+        """Inicia la simulación con el motor de hilos."""
+        if self.running: return
+        
+        config = ConfiguracionSimulacion(intervalo_tick=0.3)
+        self.engine = ThreadingEngine(config)
+        self.engine.start()
+        
+        self.running = True
+        self.btn_threading.config(state=tk.DISABLED)
+        self.btn_multiproc.config(state=tk.DISABLED)
+        self.btn_stop.config(state=tk.NORMAL)
+        
+        # Iniciar el loop de actualización
+        self.update_loop()
+
+    def start_multiprocessing(self):
+        """Inicia la simulación con el motor de procesos."""
+        if self.running: return
+
+        config = ConfiguracionSimulacion(intervalo_tick=0.3)
+        self.engine = MultiprocessingEngine(config)
+        self.engine.start()
+
+        self.running = True
+        self.btn_threading.config(state=tk.DISABLED)
+        self.btn_multiproc.config(state=tk.DISABLED)
+        self.btn_stop.config(state=tk.NORMAL)
+        
+        # Iniciar el loop de actualización
+        self.update_loop()
+
+    def stop_simulation(self):
+        """Detiene la simulación."""
+        if not self.running: return
+        
+        self.running = False
+        if self.engine:
+            self.engine.stop()
+            self.engine = None
+
+        self.btn_threading.config(state=tk.NORMAL)
+        self.btn_multiproc.config(state=tk.NORMAL)
+        self.btn_stop.config(state=tk.DISABLED)
+
+    def update_loop(self):
+        """Loop principal de actualización de la GUI."""
+        if not self.running:
+            return
+
+        # 1. Obtener el nuevo estado del backend
+        state = self.engine.step()
+
+        # 2. Actualizar visualización
+        self._update_ui(state)
+
+        # 3. Programar el siguiente tick (según configuración del backend)
+        interval_ms = int(state.configuracion.get('intervalo_tick', 0.3) * 1000)
+        self.root.after(interval_ms, self.update_loop)
+
+    def _update_ui(self, state):
+        """Actualiza todos los elementos gráficos con el nuevo estado."""
+        # Limpiar vehículos previos (para redibujar)
+        self.canvas.delete("vehiculo")
+
+        # Actualizar colores de semáforos
+        COLORS = {"VERDE": "#00FF00", "AMARILLO": "#FFFF00", "ROJO": "#FF0000"}
+        for via, color_name in state.luces.items():
+            if via in self.semaforos_graficos:
+                self.canvas.itemconfig(self.semaforos_graficos[via], fill=COLORS.get(color_name, "#ffffff"))
+
+        # Dibujar vehículos en las colas
+        self._draw_vehicles(state.vehiculos_detalle)
+
+    def _draw_vehicles(self, vehiculos_detalle):
+        """Dibuja los vehículos esperando en cada vía."""
+        # Configuración de dibujo de colas
+        # x_start, y_start, dx, dy (dirección de la fila)
+        OFFSET = 25 # Espacio entre autos
+        QUEUE_CFG = {
+            "NORTE": (285, 230, 0, -OFFSET), # Hacia arriba
+            "SUR":   (285, 360, 0, OFFSET),  # Hacia abajo
+            "ESTE":  (360, 285, OFFSET, 0),  # Hacia la derecha
+            "OESTE": (230, 285, -OFFSET, 0)  # Hacia la izquierda
+        }
+
+        for via, vehiculos in vehiculos_detalle.items():
+            if via not in QUEUE_CFG: continue
+            
+            x0, y0, dx, dy = QUEUE_CFG[via]
+            
+            for i, v in enumerate(vehiculos):
+                # Calcular posición basada en el índice en la cola
+                x = x0 + (i * dx)
+                y = y0 + (i * dy)
+                
+                # Dibujar un rectángulo azul para el vehículo
+                # Ancho y alto según orientación
+                if via in ["NORTE", "SUR"]:
+                    w_car, h_car = 30, 20
+                else:
+                    w_car, h_car = 20, 30
+
+                self.canvas.create_rectangle(
+                    x, y, x + w_car, y + h_car,
+                    fill="#3498db", outline="white",
+                    tags="vehiculo"
+                )
 
     def _draw_traffic_lights(self):
         """Dibuja los 4 semáforos en sus posiciones iniciales (Rojo)."""
