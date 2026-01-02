@@ -21,6 +21,12 @@ class TrafficGUI:
         # Estado de la simulación
         self.engine = None
         self.running = False
+        self.tick_interval = 1.5 # Segundos entre procesos de lógica
+        
+        # --- Sistema de Animación Fluida ---
+        self.visual_vehicles = {} # id -> {x, y, target_x, target_y, via, state}
+        self.animation_speed = 4.0 # Píxeles por frame de animación
+        self.fps_ms = 30           # ~33 FPS para fluidez
         
         # --- Contenedores Principales ---
         # Frame izquierdo para el canvas (Simulación)
@@ -60,6 +66,7 @@ class TrafficGUI:
             font=("Arial", 10, "bold"), pady=10, relief=tk.FLAT, cursor="hand2"
         )
         self.btn_threading.pack(fill=tk.X, pady=5)
+        self._bind_hover_effect(self.btn_threading, "#4CAF50", "#66BB6A")
 
         self.btn_multiproc = tk.Button(
             self.sidebar_frame, text="▶️ Iniciar Procesos", 
@@ -67,6 +74,7 @@ class TrafficGUI:
             font=("Arial", 10, "bold"), pady=10, relief=tk.FLAT, cursor="hand2"
         )
         self.btn_multiproc.pack(fill=tk.X, pady=5)
+        self._bind_hover_effect(self.btn_multiproc, "#2196F3", "#42A5F5")
 
         self.btn_stop = tk.Button(
             self.sidebar_frame, text="⏹️ Detener", 
@@ -75,6 +83,7 @@ class TrafficGUI:
             state=tk.DISABLED
         )
         self.btn_stop.pack(fill=tk.X, pady=(20, 5))
+        self._bind_hover_effect(self.btn_stop, "#f44336", "#ef5350")
 
         # --- Panel de Estadísticas ---
         self.stats_frame = tk.LabelFrame(
@@ -122,7 +131,13 @@ class TrafficGUI:
         """Inicia la simulación con el motor de hilos."""
         if self.running: return
         
-        config = ConfiguracionSimulacion(intervalo_tick=0.3)
+        config = ConfiguracionSimulacion(
+            intervalo_tick=self.tick_interval,
+            duracion_verde=15,          # Fases más largas
+            duracion_amarillo=5,
+            probabilidad_llegada=0.15,  # Menos tráfico
+            capacidad_cruce_por_tick=1  # Salen uno por uno para dar espacio
+        )
         self.engine = ThreadingEngine(config)
         self.engine.start()
         
@@ -131,14 +146,21 @@ class TrafficGUI:
         self.btn_multiproc.config(state=tk.DISABLED)
         self.btn_stop.config(state=tk.NORMAL)
         
-        # Iniciar el loop de actualización
+        # Iniciar el loop de actualización y animación
         self.update_loop()
+        self._animation_loop()
 
     def start_multiprocessing(self):
         """Inicia la simulación con el motor de procesos."""
         if self.running: return
 
-        config = ConfiguracionSimulacion(intervalo_tick=0.3)
+        config = ConfiguracionSimulacion(
+            intervalo_tick=self.tick_interval,
+            duracion_verde=15,
+            duracion_amarillo=5,
+            probabilidad_llegada=0.15,
+            capacidad_cruce_por_tick=1
+        )
         self.engine = MultiprocessingEngine(config)
         self.engine.start()
 
@@ -147,8 +169,9 @@ class TrafficGUI:
         self.btn_multiproc.config(state=tk.DISABLED)
         self.btn_stop.config(state=tk.NORMAL)
         
-        # Iniciar el loop de actualización
+        # Iniciar el loop de actualización y animación
         self.update_loop()
+        self._animation_loop()
 
     def stop_simulation(self):
         """Detiene la simulación."""
@@ -179,43 +202,145 @@ class TrafficGUI:
         self.root.after(interval_ms, self.update_loop)
 
     def _update_ui(self, state):
-        """Actualiza todos los elementos gráficos con el nuevo estado."""
-        # Limpiar elementos dinámicos
-        self.canvas.delete("vehiculo")
-        self.canvas.delete("transito")
-
+        """Sincroniza el estado del motor con el sistema de animación visual."""
         # 1. Actualizar colores de semáforos
         COLORS = {"VERDE": "#00FF00", "AMARILLO": "#FFFF00", "ROJO": "#FF0000"}
         for via, color_name in state.luces.items():
             if via in self.semaforos_graficos:
                 self.canvas.itemconfig(self.semaforos_graficos[via], fill=COLORS.get(color_name, "#ffffff"))
 
-        # 2. Dibujar vehículos en las colas
-        self._draw_vehicles(state.vehiculos_detalle)
-        
-        # 3. Dibujar vehículos CRUZANDO (Movimiento)
-        self._draw_transit(state.vehiculos_en_transito)
+        # 2. Sincronizar Vehículos (Colas)
+        OFFSET = 55 # Espacio entre autos en cola
+        STOP_LINES = {
+            "NORTE": 200, "SUR": 400, "ESTE": 400, "OESTE": 200
+        }
+        # Carriles (Sistema de tráfico por la derecha):
+        # Norte -> Sur: x=270
+        # Sur -> Norte: x=330
+        # Este -> Oeste: y=270
+        # Oeste -> Este: y=330
+        ENTRANCES = {
+            "NORTE": (270, -60), "SUR": (330, 660), "ESTE": (660, 270), "OESTE": (-60, 330)
+        }
+        EXITS = {
+            "NORTE": (270, 700), "SUR": (330, -100), "ESTE": (-100, 270), "OESTE": (700, 330)
+        }
 
-        # 4. Actualizar estadísticas
-        stats = state.estadisticas
+        active_ids = []
+        
+        # Procesar colas
+        for via, vehiculos in state.vehiculos_detalle.items():
+            for i, v in enumerate(vehiculos):
+                v_id = v.get('id', 0) if isinstance(v, dict) else getattr(v, 'id', 0)
+                active_ids.append(v_id)
+                
+                # Posición objetivo según su lugar en la cola y carril
+                if via == "NORTE": target = (270, STOP_LINES[via] - (i * OFFSET))
+                elif via == "SUR": target = (330, STOP_LINES[via] + (i * OFFSET))
+                elif via == "ESTE": target = (STOP_LINES[via] + (i * OFFSET), 270)
+                elif via == "OESTE": target = (STOP_LINES[via] - (i * OFFSET), 330)
+                
+                if v_id not in self.visual_vehicles:
+                    start_pos = ENTRANCES[via]
+                    self.visual_vehicles[v_id] = {
+                        "x": start_pos[0], "y": start_pos[1], 
+                        "tx": target[0], "ty": target[1], 
+                        "via": via, "state": "QUEUE"
+                    }
+                else:
+                    self.visual_vehicles[v_id]["tx"] = target[0]
+                    self.visual_vehicles[v_id]["ty"] = target[1]
+                    self.visual_vehicles[v_id]["state"] = "QUEUE"
+
+        # Procesar cruzando
+        for via, vehiculos in state.vehiculos_en_transito.items():
+            for v in vehiculos:
+                v_id = v['id']
+                active_ids.append(v_id)
+                exit_pos = EXITS[via]
+                
+                if v_id in self.visual_vehicles:
+                    self.visual_vehicles[v_id]["tx"] = exit_pos[0]
+                    self.visual_vehicles[v_id]["ty"] = exit_pos[1]
+                    self.visual_vehicles[v_id]["state"] = "CROSSING"
+
+        # 3. Actualizar estadísticas y Log
         self.label_tick.config(text=str(state.tick))
         self.label_ciclo.config(text=str(state.ciclo))
-        self.label_total.config(text=str(stats.get('total_vehiculos', 0)))
-        espera = stats.get('tiempo_espera_promedio', 0)
-        self.label_espera.config(text=f"{espera:.2f}s")
+        self.label_total.config(text=str(state.estadisticas.get('total_vehiculos', 0)))
+        self.label_espera.config(text=f"{state.estadisticas.get('tiempo_espera_promedio', 0):.2f}s")
         
-        # 5. Actualizar Barra de Fase y Nombre
         timing = state.timing_fase
         self.label_fase_nombre.config(text=timing['fase_actual'])
         progreso = timing['ticks_en_fase'] / timing['duracion_total']
-        self.canvas_phase.coords(self.phase_bar, 0, 0, progreso * 200, 15) # 200 es aprox el ancho
+        self.canvas_phase.coords(self.phase_bar, 0, 0, progreso * 200, 15)
 
-        # 6. Actualizar Log de Eventos
         eventos = state.eventos_tick.get("eventos", [])
         for ev in eventos:
             msg = f"[{state.tick}] {ev.get('icono', '')} {ev['via']}: {ev['tipo'].replace('vehiculo_', '')}"
             self.log_list.insert(0, msg)
             if self.log_list.size() > 50: self.log_list.delete(50, tk.END)
+
+    def _animation_loop(self):
+        """Mueve suavemente cada vehículo hacia su objetivo."""
+        if not self.running: return
+
+        # Limpiar canvas dinámico
+        self.canvas.delete("auto")
+
+        to_remove = []
+        for v_id, v in self.visual_vehicles.items():
+            # Interpolar posición (Mover un paso hacia el objetivo)
+            dx = v["tx"] - v["x"]
+            dy = v["ty"] - v["y"]
+            dist = (dx**2 + dy**2)**0.5
+
+            if dist > self.animation_speed:
+                v["x"] += (dx/dist) * self.animation_speed
+                v["y"] += (dy/dist) * self.animation_speed
+            else:
+                v["x"] = v["tx"]
+                v["y"] = v["ty"]
+                # Si llegó a la salida, marcar para eliminar
+                if v["state"] == "CROSSING" and dist < 1:
+                    to_remove.append(v_id)
+
+            # Dibujar el auto (Rectángulo azul con faros)
+            self._render_vehicle(v["x"], v["y"], v["via"])
+
+        for vid in to_remove:
+            del self.visual_vehicles[vid]
+
+        self.root.after(self.fps_ms, self._animation_loop)
+
+    def _render_vehicle(self, x, y, via):
+        """Dibuja un vehículo centrado en (x,y)."""
+        color = "#3498db"
+        if via in ["NORTE", "SUR"]:
+            w, h = 30, 45
+        else:
+            w, h = 45, 30
+
+        # Cuerpo
+        self.canvas.create_rectangle(
+            x - w/2, y - h/2, x + w/2, y + h/2,
+            fill=color, outline="white", width=2, tags="auto"
+        )
+        
+        # Faros
+        f_size = 5
+        if via == "NORTE": # Hacia el SUR
+            self.canvas.create_oval(x-10, y+h/2-f_size, x-5, y+h/2, fill="yellow", tags="auto")
+            self.canvas.create_oval(x+5, y+h/2-f_size, x+10, y+h/2, fill="yellow", tags="auto")
+        elif via == "SUR":
+            self.canvas.create_oval(x-10, y-h/2, x-5, y-h/2+f_size, fill="yellow", tags="auto")
+            self.canvas.create_oval(x+5, y-h/2, x+10, y-h/2+f_size, fill="yellow", tags="auto")
+        elif via == "ESTE":
+            self.canvas.create_oval(x-w/2, y-10, x-w/2+f_size, y-5, fill="yellow", tags="auto")
+            self.canvas.create_oval(x-w/2, y+5, x-w/2+f_size, y+10, fill="yellow", tags="auto")
+        elif via == "OESTE":
+            self.canvas.create_oval(x+w/2-f_size, y-10, x+w/2, y-5, fill="yellow", tags="auto")
+            self.canvas.create_oval(x+w/2-f_size, y+5, x+w/2, y+10, fill="yellow", tags="auto")
 
     def _create_stat_label(self, text, initial_value):
         """Crea un par de etiquetas (nombre: valor) en el panel de estadísticas."""
@@ -227,76 +352,30 @@ class TrafficGUI:
         val_label.pack(side=tk.RIGHT)
         return val_label
 
-    def _draw_transit(self, vehiculos_en_transito):
-        """Anima los vehículos que están cruzando la intersección."""
-        # Rutas de cruce: (x_start, y_start, x_end, y_end)
-        ROUTES = {
-            "NORTE": (300, 230, 300, 370), # Baja
-            "SUR":   (300, 370, 300, 230), # Sube
-            "ESTE":  (370, 300, 230, 300), # Va a la izquierda
-            "OESTE": (230, 300, 370, 300)  # Va a la derecha
-        }
+    def _bind_hover_effect(self, button, normal_color, hover_color):
+        """Añade un efecto de cambio de color al pasar el mouse por encima."""
+        def on_enter(e):
+            if button['state'] == tk.NORMAL:
+                button['bg'] = hover_color
+        def on_leave(e):
+            if button['state'] == tk.NORMAL:
+                button['bg'] = normal_color
+        
+        button.bind("<Enter>", on_enter)
+        button.bind("<Leave>", on_leave)
 
-        for via, vehiculos in vehiculos_en_transito.items():
-            if via not in ROUTES: continue
-            x1, y1, x2, y2 = ROUTES[via]
-            
-            for v in vehiculos:
-                prog = v['progreso']
-                # Interpolar posición
-                x = x1 + (x2 - x1) * prog
-                y = y1 + (y2 - y1) * prog
-                
-                self.canvas.create_oval(
-                    x-10, y-10, x+10, y+10,
-                    fill="#2ecc71", outline="white", width=2,
-                    tags="transito"
-                )
-
-    def _draw_vehicles(self, vehiculos_detalle):
-        """Dibuja los vehículos esperando en cada vía."""
-        # Configuración de dibujo de colas
-        # x_start, y_start, dx, dy (dirección de la fila)
-        OFFSET = 25 # Espacio entre autos
-        QUEUE_CFG = {
-            "NORTE": (285, 230, 0, -OFFSET), # Hacia arriba
-            "SUR":   (285, 360, 0, OFFSET),  # Hacia abajo
-            "ESTE":  (360, 285, OFFSET, 0),  # Hacia la derecha
-            "OESTE": (230, 285, -OFFSET, 0)  # Hacia la izquierda
-        }
-
-        for via, vehiculos in vehiculos_detalle.items():
-            if via not in QUEUE_CFG: continue
-            
-            x0, y0, dx, dy = QUEUE_CFG[via]
-            
-            for i, v in enumerate(vehiculos):
-                # Calcular posición basada en el índice en la cola
-                x = x0 + (i * dx)
-                y = y0 + (i * dy)
-                
-                # Dibujar un rectángulo azul para el vehículo
-                # Ancho y alto según orientación
-                if via in ["NORTE", "SUR"]:
-                    w_car, h_car = 30, 20
-                else:
-                    w_car, h_car = 20, 30
-
-                self.canvas.create_rectangle(
-                    x, y, x + w_car, y + h_car,
-                    fill="#3498db", outline="white",
-                    tags="vehiculo"
-                )
+    def _get_vehicle_color(self, vehiculo_id):
+        """Devuelve azul estándar para todos."""
+        return "#3498db"
 
     def _draw_traffic_lights(self):
-        """Dibuja los 4 semáforos en sus posiciones iniciales (Rojo)."""
-        # Posiciones estratégicas en las esquinas de la intersección
-        # Ajustadas para estar a la derecha de cada vía de entrada
+        """Dibuja los 4 semáforos a la derecha de cada carril."""
+        # Reposicionados para estar a la derecha de la vía que llega al cruce
         POSITIONS = {
-            "NORTE": (370, 180),
-            "SUR":   (190, 380),
-            "ESTE":  (380, 370),
-            "OESTE": (180, 190)
+            "NORTE": (210, 175), # Derecha bajando
+            "SUR":   (370, 405), # Derecha subiendo
+            "ESTE":  (405, 210), # Derecha yendo a izquierda
+            "OESTE": (175, 370)  # Derecha yendo a derecha
         }
 
         for via, (x, y) in POSITIONS.items():
@@ -323,39 +402,73 @@ class TrafficGUI:
             )
 
     def _draw_static_elements(self):
-        """Dibuja las calles y líneas de la intersección."""
+        """Dibuja las calles y detalles urbanos (veredas, pasos de cebra)."""
         # Colores
         color_asfalto = "#333333"
         color_linea = "#ffffff"
-        color_linea_doble = "#ffcc00" # Amarillo para la doble línea central
+        color_linea_doble = "#ffcc00"
+        color_cesped = "#2d5a27"
+        color_vereda = "#999999"
 
         w, h = 600, 600
-        road_width = 120 # Ancho de la calle
+        road_width = 120
         
-        # 1. Fondo de asfalto (Intersección central)
-        # Calle Horizontal
-        self.canvas.create_rectangle(0, (h/2) - (road_width/2), w, (h/2) + (road_width/2), fill=color_asfalto, outline="")
-        # Calle Vertical
-        self.canvas.create_rectangle((w/2) - (road_width/2), 0, (w/2) + (road_width/2), h, fill=color_asfalto, outline="")
+        # 1. Fondo (Césped)
+        self.canvas.create_rectangle(0, 0, w, h, fill=color_cesped, outline="")
 
-        # 2. Líneas Centrales (Doble línea amarilla)
+        # 2. Veredas (Bloques en las esquinas)
+        corner_size = (w/2) - (road_width/2)
+        # Esquina NO
+        self.canvas.create_rectangle(0, 0, corner_size, corner_size, fill=color_vereda, outline="#777777")
+        # Esquina NE
+        self.canvas.create_rectangle(w - corner_size, 0, w, corner_size, fill=color_vereda, outline="#777777")
+        # Esquina SO
+        self.canvas.create_rectangle(0, h - corner_size, corner_size, h, fill=color_vereda, outline="#777777")
+        # Esquina SE
+        self.canvas.create_rectangle(w - corner_size, h - corner_size, w, h, fill=color_vereda, outline="#777777")
+
+        # 3. Asfalto (Calles)
+        self.canvas.create_rectangle(0, corner_size, w, h - corner_size, fill=color_asfalto, outline="")
+        self.canvas.create_rectangle(corner_size, 0, w - corner_size, h, fill=color_asfalto, outline="")
+
+        # 4. Pasos de Cebra
+        def draw_crosswalk(x1, y1, x2, y2, vertical=True):
+            steps = 6
+            for i in range(steps):
+                if vertical:
+                    offset = i * (road_width / steps)
+                    self.canvas.create_rectangle(x1 + offset + 2, y1, x1 + offset + 15, y2, fill="white", outline="")
+                else:
+                    offset = i * (road_width / steps)
+                    self.canvas.create_rectangle(x1, y1 + offset + 2, x2, y1 + offset + 15, fill="white", outline="")
+
+        # Norte
+        draw_crosswalk(corner_size, corner_size - 25, w - corner_size, corner_size - 10)
+        # Sur
+        draw_crosswalk(corner_size, h - corner_size + 10, w - corner_size, h - corner_size + 25)
+        # Este
+        draw_crosswalk(w - corner_size + 10, corner_size, w - corner_size + 25, h - corner_size, vertical=False)
+        # Oeste
+        draw_crosswalk(corner_size - 25, corner_size, corner_size - 10, h - corner_size, vertical=False)
+
+        # 5. Líneas Amarillas (Doble línea central)
         # Horizontal
-        self.canvas.create_line(0, h/2 - 2, w, h/2 - 2, fill=color_linea_doble, width=2)
-        self.canvas.create_line(0, h/2 + 2, w, h/2 + 2, fill=color_linea_doble, width=2)
+        self.canvas.create_line(0, h/2 - 2, corner_size - 30, h/2 - 2, fill=color_linea_doble, width=2)
+        self.canvas.create_line(0, h/2 + 2, corner_size - 30, h/2 + 2, fill=color_linea_doble, width=2)
+        self.canvas.create_line(w - corner_size + 30, h/2 - 2, w, h/2 - 2, fill=color_linea_doble, width=2)
+        self.canvas.create_line(w - corner_size + 30, h/2 + 2, w, h/2 + 2, fill=color_linea_doble, width=2)
         
         # Vertical
-        self.canvas.create_line(w/2 - 2, 0, w/2 - 2, h, fill=color_linea_doble, width=2)
-        self.canvas.create_line(w/2 + 2, 0, w/2 + 2, h, fill=color_linea_doble, width=2)
+        self.canvas.create_line(w/2 - 2, 0, w/2 - 2, corner_size - 30, fill=color_linea_doble, width=2)
+        self.canvas.create_line(w/2 + 2, 0, w/2 + 2, corner_size - 30, fill=color_linea_doble, width=2)
+        self.canvas.create_line(w/2 - 2, h - corner_size + 30, w/2 - 2, h, fill=color_linea_doble, width=2)
+        self.canvas.create_line(w/2 + 2, h - corner_size + 30, w/2 + 2, h, fill=color_linea_doble, width=2)
 
-        # 3. Líneas de detención (Blancas)
-        # Norte
-        self.canvas.create_line(w/2 - road_width/2, h/2 - road_width/2 - 5, w/2 + road_width/2, h/2 - road_width/2 - 5, fill=color_linea, width=4)
-        # Sur
-        self.canvas.create_line(w/2 - road_width/2, h/2 + road_width/2 + 5, w/2 + road_width/2, h/2 + road_width/2 + 5, fill=color_linea, width=4)
-        # Este
-        self.canvas.create_line(w/2 + road_width/2 + 5, h/2 - road_width/2, w/2 + road_width/2 + 5, h/2 + road_width/2, fill=color_linea, width=4)
-        # Oeste
-        self.canvas.create_line(w/2 - road_width/2 - 5, h/2 - road_width/2, w/2 - road_width/2 - 5, h/2 + road_width/2, fill=color_linea, width=4)
+        # 6. Líneas de detención (Anchas antes de la cebra)
+        self.canvas.create_line(corner_size, corner_size - 5, w - corner_size, corner_size - 5, fill=color_linea, width=4)
+        self.canvas.create_line(corner_size, h - corner_size + 5, w - corner_size, h - corner_size + 5, fill=color_linea, width=4)
+        self.canvas.create_line(w - corner_size + 5, corner_size, w - corner_size + 5, h - corner_size, fill=color_linea, width=4)
+        self.canvas.create_line(corner_size - 5, corner_size, corner_size - 5, h - corner_size, fill=color_linea, width=4)
 
 if __name__ == "__main__":
     root = tk.Tk()

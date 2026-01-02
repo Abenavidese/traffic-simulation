@@ -2,7 +2,7 @@
 Estructuras de mensajes para comunicación entre procesos.
 Usado por el multiprocessing engine.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional, List, Dict
 from enum import Enum, auto
 
@@ -72,6 +72,7 @@ class EstadoSemaforoMsg:
     color: str
     tamano_cola: int
     vehiculos_cruzados: int
+    vehiculos_cola: List[dict] = field(default_factory=list) # Lista de diccionarios con info de autos
 
     def to_dict(self) -> dict:
         """Convierte a diccionario."""
@@ -80,6 +81,7 @@ class EstadoSemaforoMsg:
             "color": self.color,
             "tamano_cola": self.tamano_cola,
             "vehiculos_cruzados": self.vehiculos_cruzados,
+            "vehiculos_cola": self.vehiculos_cola,
         }
 
 
@@ -91,6 +93,7 @@ class VehiculosDespachadosMsg:
     via: str
     cantidad: int
     tiempos_espera: List[float]
+    vehiculos_detalle: List[dict] = field(default_factory=list) # Detalle para animación
 
     def to_dict(self) -> dict:
         """Convierte a diccionario."""
@@ -98,4 +101,5 @@ class VehiculosDespachadosMsg:
             "via": self.via,
             "cantidad": self.cantidad,
             "tiempos_espera": self.tiempos_espera,
+            "vehiculos_detalle": self.vehiculos_detalle,
         }

@@ -62,10 +62,17 @@ def worker_semaforo(via: Via, queue_comandos: mp.Queue, queue_respuestas: mp.Que
                 vehiculos_cruzados = semaforo.tick()
                 tiempos = [v.tiempo_espera_total for v in vehiculos_cruzados]
                 
+                # NUEVO: Serializar detalle para animación
+                detalle = [
+                    {"id": v.id, "tiempo_espera": v.tiempo_espera_total}
+                    for v in vehiculos_cruzados
+                ]
+                
                 msg = VehiculosDespachadosMsg(
                     via=via.name,
                     cantidad=len(vehiculos_cruzados),
                     tiempos_espera=tiempos,
+                    vehiculos_detalle=detalle
                 )
                 queue_respuestas.put(Respuesta(
                     tipo=TipoRespuesta.VEHICULOS_DESPACHADOS,
@@ -74,12 +81,16 @@ def worker_semaforo(via: Via, queue_comandos: mp.Queue, queue_respuestas: mp.Que
                 ))
             
             elif comando.tipo == TipoComando.OBTENER_ESTADO:
+                # Usar el método oficial del dominio para el detalle de cola
+                vehiculos_cola = semaforo.get_vehiculos_detalle()
+                
                 # Enviar estado
                 estado = EstadoSemaforoMsg(
                     via=via.name,
                     color=semaforo.color.name,
                     tamano_cola=semaforo.tamano_cola,
                     vehiculos_cruzados=semaforo.vehiculos_cruzados_total,
+                    vehiculos_cola=vehiculos_cola
                 )
                 queue_respuestas.put(Respuesta(
                     tipo=TipoRespuesta.ESTADO_SEMAFORO,
@@ -131,6 +142,10 @@ class MultiprocessingEngine(BaseEngine):
         
         # Contador de vehículos
         self._next_vehicle_id = 0
+        
+        # Sistema de eventos y tránsito
+        self._eventos_tick: List[Dict] = []
+        self._vehiculos_en_transito: Dict[str, List[Dict]] = {}
 
     def start(self) -> None:
         """Inicializa el sistema."""
@@ -170,69 +185,88 @@ class MultiprocessingEngine(BaseEngine):
         self._running = True
 
     def step(self) -> TrafficState:
-        """
-        Ejecuta un tick de simulación.
-        
-        Returns:
-            Estado actual del sistema
-        """
+        """Tick de simulación con captura de eventos y tránsito."""
         if not self._running:
-            raise RuntimeError("Engine no está corriendo. Llama start() primero.")
+            raise RuntimeError("Engine no está corriendo.")
+        
+        # Limpiar datos del tick anterior
+        self._eventos_tick = []
+        self._vehiculos_en_transito = {}
+        
+        # Guardar colores anteriores
+        colores_anteriores = {via: self.estados_semaforos[via].color for via in Via}
         
         # 1. Controlador decide el plan de luces
         plan = self.controlador.avanzar_tick()
         
-        # 2. Enviar comandos de cambio de color
+        # 2. Enviar comandos de cambio de color y detectar eventos
         for via, color in plan.items():
+            color_anterior = colores_anteriores[via]
             self.queues_comandos[via].put(Comando(
-                tipo=TipoComando.CAMBIAR_COLOR,
-                via=via.name,
-                payload=color,
+                tipo=TipoComando.CAMBIAR_COLOR, via=via.name, payload=color
             ))
+            
+            if color_anterior != color.name:
+                self._eventos_tick.append({
+                    "tipo": "cambio_semaforo", "via": via.name,
+                    "color_anterior": color_anterior, "color_nuevo": color.name,
+                    "icono": self._get_icono_color(color.name)
+                })
         
-        # Esperar ACKs
         self._esperar_respuestas(len(Via), TipoRespuesta.ACK)
         
         # 3. Simular llegada de vehículos
         self._simular_llegada_vehiculos()
         
-        # 4. Enviar comando TICK a todos los semáforos
+        # 4. Enviar comando TICK
         for via in Via:
-            self.queues_comandos[via].put(Comando(
-                tipo=TipoComando.TICK,
-                via=via.name,
-            ))
+            self.queues_comandos[via].put(Comando(tipo=TipoComando.TICK, via=via.name))
         
-        # 5. Recopilar respuestas de vehículos despachados
+        # 5. Recopilar respuestas y generar tránsito
         respuestas = self._esperar_respuestas(len(Via), TipoRespuesta.VEHICULOS_DESPACHADOS)
         for resp in respuestas:
             if resp.payload:
                 msg: VehiculosDespachadosMsg = resp.payload
-                # Simular vehículos para estadísticas
-                vehiculos_simulados = [
-                    Vehiculo(id=i) for i in range(msg.cantidad)
-                ]
-                self.stats.registrar_vehiculos(vehiculos_simulados, msg.via)
+                # Registrar en stats
+                vehiculos_sim = [Vehiculo(id=v['id']) for v in msg.vehiculos_detalle]
+                self.stats.registrar_vehiculos(vehiculos_sim, msg.via)
+                
+                # Tránsito para animación
+                if msg.vehiculos_detalle:
+                    self._vehiculos_en_transito[msg.via] = []
+                    for idx, v_info in enumerate(msg.vehiculos_detalle):
+                        progreso = (idx + 1) / len(msg.vehiculos_detalle)
+                        self._vehiculos_en_transito[msg.via].append({
+                            "id": v_info['id'], "progreso": progreso
+                        })
+                        self._eventos_tick.append({
+                            "tipo": "vehiculo_despachado", "via": msg.via,
+                            "vehiculo_id": v_info['id'], "icono": "🚗✓"
+                        })
         
         # 6. Obtener estado de semáforos
         self._actualizar_estados_semaforos()
         
-        # 7. Construir estado
         return self._construir_estado()
+
+    def _get_icono_color(self, color: str) -> str:
+        return {"VERDE": "🟢", "AMARILLO": "🟡", "ROJO": "🔴"}.get(color, "⚪")
 
     def _simular_llegada_vehiculos(self) -> None:
         """Simula llegada aleatoria de vehículos."""
         for via in Via:
             if random.random() < self.config.probabilidad_llegada:
+                v_id = self._next_vehicle_id
                 self.queues_comandos[via].put(Comando(
                     tipo=TipoComando.AGREGAR_VEHICULO,
                     via=via.name,
-                    payload=self._next_vehicle_id,
+                    payload=v_id,
                 ))
                 self._next_vehicle_id += 1
-        
-        # Esperar ACKs
-        # (Simplificado: no esperamos ACKs aquí para mayor velocidad)
+                self._eventos_tick.append({
+                    "tipo": "vehiculo_llego", "via": via.name,
+                    "vehiculo_id": v_id, "icono": "🚗→"
+                })
 
     def _esperar_respuestas(self, cantidad: int, tipo_esperado: TipoRespuesta) -> List[Respuesta]:
         """Espera N respuestas de un tipo específico."""
@@ -299,10 +333,13 @@ class MultiprocessingEngine(BaseEngine):
             colas=colas,
             estadisticas=self.stats.get_resumen(),
             info_sistema=info_sistema,
-            # Nuevos campos
-            vehiculos_detalle={},  # TODO: Requiere IPC adicional
-            vehiculos_en_transito={},  # TODO: Implementar en futuro
-            eventos_tick={},  # TODO: Implementar en futuro
+            # Detalles recuperados del cache de estados
+            vehiculos_detalle={
+                via.name: self.estados_semaforos[via].vehiculos_cola
+                for via in Via
+            },
+            vehiculos_en_transito=self._vehiculos_en_transito,
+            eventos_tick={"eventos": self._eventos_tick},
             timing_fase=timing_fase,
             configuracion=configuracion,
         )
