@@ -1,6 +1,8 @@
 import tkinter as tk
 import sys
 import os
+import platform
+import multiprocessing
 
 # Asegurar que el backend sea importable
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
@@ -110,6 +112,34 @@ class TrafficGUI:
         self.canvas_phase.pack(fill=tk.X, pady=5)
         self.phase_bar = self.canvas_phase.create_rectangle(0, 0, 0, 15, fill="#4db6ac", outline="")
 
+        # --- Información del Sistema ---
+        self.system_frame = tk.LabelFrame(
+            self.sidebar_frame, text=" SISTEMA ", 
+            fg="white", bg="#3c3f41", font=("Arial", 10, "bold"),
+            padx=10, pady=10, relief=tk.GROOVE
+        )
+        self.system_frame.pack(fill=tk.X, pady=10)
+
+        # Recopilar información del entorno
+        py_version = platform.python_version()
+        
+        # Detección del GIL mejorada
+        if hasattr(sys, "_is_gil_enabled"):
+            gil_enabled = sys._is_gil_enabled()
+            gil_status = "Habilitado" if gil_enabled else "Deshabilitado"
+        else:
+            # En versiones < 3.13 el GIL siempre está presente
+            gil_status = "Habilitado (Versión Legacy)"
+        
+        os_name = platform.system()
+        cpu_count = multiprocessing.cpu_count()
+
+        # Mostrar información en el panel
+        self._create_info_label(self.system_frame, "Python:", f"v{py_version}")
+        self._create_info_label(self.system_frame, "GIL:", gil_status)
+        self._create_info_label(self.system_frame, "SO:", os_name)
+        self._create_info_label(self.system_frame, "Núcleos CPU:", str(cpu_count))
+
         # --- Log de Eventos ---
         self.log_frame = tk.LabelFrame(self.sidebar_frame, text=" EVENTOS (LOG) ", fg="white", bg="#3c3f41", font=("Arial", 10, "bold"), padx=5, pady=5)
         self.log_frame.pack(fill=tk.BOTH, expand=True, pady=10)
@@ -182,9 +212,25 @@ class TrafficGUI:
             self.engine.stop()
             self.engine = None
 
+        # --- LIMPIEZA DE ESTADO ---
+        self.visual_vehicles.clear()      # Eliminar rastro de autos antiguos
+        self.canvas.delete("auto")        # Limpiar canvas inmediatamente
+        self._reset_ui_stats()            # Reiniciar contadores visuales
+
         self.btn_threading.config(state=tk.NORMAL)
         self.btn_multiproc.config(state=tk.NORMAL)
         self.btn_stop.config(state=tk.DISABLED)
+
+    def _reset_ui_stats(self):
+        """Reinicia las etiquetas de estadísticas en la interfaz."""
+        self.label_tick.config(text="0")
+        self.label_ciclo.config(text="0")
+        self.label_total.config(text="0")
+        self.label_espera.config(text="0.00s")
+        self.label_fase_nombre.config(text="ESPERANDO...")
+        self.canvas_phase.coords(self.phase_bar, 0, 0, 0, 15)
+        # Opcional: limpiar log (o dejarlo para historial)
+        # self.log_list.delete(0, tk.END)
 
     def update_loop(self):
         """Loop principal de actualización de la GUI."""
@@ -248,8 +294,15 @@ class TrafficGUI:
                         "via": via, "state": "QUEUE"
                     }
                 else:
+                    # Si el ID se reutiliza para una vía distinta, teletransportar
+                    if self.visual_vehicles[v_id].get("via") != via:
+                        start_pos = ENTRANCES[via]
+                        self.visual_vehicles[v_id]["x"] = start_pos[0]
+                        self.visual_vehicles[v_id]["y"] = start_pos[1]
+                    
                     self.visual_vehicles[v_id]["tx"] = target[0]
                     self.visual_vehicles[v_id]["ty"] = target[1]
+                    self.visual_vehicles[v_id]["via"] = via
                     self.visual_vehicles[v_id]["state"] = "QUEUE"
 
         # Procesar cruzando
@@ -263,6 +316,7 @@ class TrafficGUI:
                     self.visual_vehicles[v_id]["tx"] = exit_pos[0]
                     self.visual_vehicles[v_id]["ty"] = exit_pos[1]
                     self.visual_vehicles[v_id]["state"] = "CROSSING"
+                    self.visual_vehicles[v_id]["via"] = via # Asegurar orientación al cruzar
 
         # 3. Actualizar estadísticas y Log
         self.label_tick.config(text=str(state.tick))
@@ -351,6 +405,14 @@ class TrafficGUI:
         val_label = tk.Label(container, text=initial_value, fg="#4db6ac", bg="#3c3f41", font=("Arial", 9, "bold"))
         val_label.pack(side=tk.RIGHT)
         return val_label
+
+    def _create_info_label(self, parent, text, value):
+        """Crea un par de etiquetas (nombre: valor) en el panel de sistema."""
+        container = tk.Frame(parent, bg="#3c3f41")
+        container.pack(fill=tk.X, pady=1)
+        
+        tk.Label(container, text=text, fg="#aaaaaa", bg="#3c3f41", font=("Arial", 8)).pack(side=tk.LEFT)
+        tk.Label(container, text=value, fg="#ffffff", bg="#3c3f41", font=("Arial", 8, "bold")).pack(side=tk.RIGHT)
 
     def _bind_hover_effect(self, button, normal_color, hover_color):
         """Añade un efecto de cambio de color al pasar el mouse por encima."""
