@@ -2,6 +2,7 @@
 Semáforo individual para una vía.
 Responsable de mantener cola de vehículos y despachar según el color.
 """
+import threading
 from collections import deque
 from typing import List
 
@@ -30,6 +31,7 @@ class Semaforo:
         self.cola: deque[Vehiculo] = deque()
         self.capacidad_por_tick = capacidad_por_tick
         self._vehiculos_cruzados_total = 0
+        self._lock = threading.Lock() # Lock interno para proteger la cola
 
     def set_color(self, color: Color) -> None:
         """Cambia el color del semáforo."""
@@ -43,7 +45,8 @@ class Semaforo:
             vehiculo: Vehículo a agregar
         """
         vehiculo.marcar_inicio_espera()
-        self.cola.append(vehiculo)
+        with self._lock:
+            self.cola.append(vehiculo)
 
     def tick(self) -> List[Vehiculo]:
         """
@@ -57,20 +60,22 @@ class Semaforo:
         """
         vehiculos_despachados = []
 
-        if self.color == Color.VERDE:
-            # Despachar hasta la capacidad permitida
-            for _ in range(min(self.capacidad_por_tick, len(self.cola))):
-                vehiculo = self.cola.popleft()
-                vehiculo.marcar_salida()
-                vehiculos_despachados.append(vehiculo)
-                self._vehiculos_cruzados_total += 1
+        with self._lock:
+            if self.color == Color.VERDE:
+                # Despachar hasta la capacidad permitida
+                for _ in range(min(self.capacidad_por_tick, len(self.cola))):
+                    vehiculo = self.cola.popleft()
+                    vehiculo.marcar_salida()
+                    vehiculos_despachados.append(vehiculo)
+                    self._vehiculos_cruzados_total += 1
 
         return vehiculos_despachados
 
     @property
     def tamano_cola(self) -> int:
         """Retorna el tamaño actual de la cola."""
-        return len(self.cola)
+        with self._lock:
+            return len(self.cola)
 
     @property
     def vehiculos_cruzados_total(self) -> int:
@@ -84,10 +89,11 @@ class Semaforo:
         Returns:
             Diccionario con el estado del semáforo
         """
+        # No se necesita lock aquí si los atributos individuales son atómicos o se accede a ellos a través de propiedades con lock
         return {
             "via": self.via.name,
             "color": self.color.name,
-            "tamano_cola": self.tamano_cola,
+            "tamano_cola": self.tamano_cola, # Usa la propiedad con lock
             "vehiculos_cruzados": self._vehiculos_cruzados_total,
         }
 
@@ -103,13 +109,18 @@ class Semaforo:
         Returns:
             Lista de diccionarios con detalles de cada vehículo
         """
+        with self._lock:
+            # Crear una copia instantánea de los datos para evitar RuntimeError si la cola se modifica durante la iteración
+            # y para asegurar que la lista de vehículos es consistente con el momento del lock.
+            cola_snapshot = list(self.cola) 
+        
         return [
             {
                 "id": vehiculo.id,
                 "posicion": idx,
                 "esperando_desde": vehiculo.tiempo_espera_total,
             }
-            for idx, vehiculo in enumerate(self.cola)
+            for idx, vehiculo in enumerate(cola_snapshot)
         ]
 
     def __repr__(self) -> str:

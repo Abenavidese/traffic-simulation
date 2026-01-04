@@ -112,6 +112,41 @@ class TrafficGUI:
         self.canvas_phase.pack(fill=tk.X, pady=5)
         self.phase_bar = self.canvas_phase.create_rectangle(0, 0, 0, 15, fill="#4db6ac", outline="")
 
+        # --- Configuración Interactiva ---
+        self.config_frame = tk.LabelFrame(
+            self.sidebar_frame, text=" CONFIGURACIÓN ", 
+            fg="white", bg="#3c3f41", font=("Arial", 10, "bold"),
+            padx=10, pady=10, relief=tk.GROOVE
+        )
+        self.config_frame.pack(fill=tk.X, pady=10)
+
+        # Slider para Duración Verde
+        tk.Label(self.config_frame, text="Duración Verde (ticks):", fg="#aaaaaa", bg="#3c3f41", font=("Arial", 8)).pack(anchor=tk.W)
+        self.slider_verde = tk.Scale(
+            self.config_frame, from_=5, to=30, orient=tk.HORIZONTAL,
+            bg="#3c3f41", fg="white", highlightthickness=0, troughcolor="#2b2b2b"
+        )
+        self.slider_verde.set(15)
+        self.slider_verde.pack(fill=tk.X, pady=(0, 5))
+
+        # Slider para Probabilidad de Llegada
+        tk.Label(self.config_frame, text="Probabilidad Llegada:", fg="#aaaaaa", bg="#3c3f41", font=("Arial", 8)).pack(anchor=tk.W)
+        self.slider_prob = tk.Scale(
+            self.config_frame, from_=0.05, to=0.5, resolution=0.01, orient=tk.HORIZONTAL,
+            bg="#3c3f41", fg="white", highlightthickness=0, troughcolor="#2b2b2b"
+        )
+        self.slider_prob.set(0.15)
+        self.slider_prob.pack(fill=tk.X, pady=(0, 5))
+
+        # Slider para Velocidad (Tick Interval)
+        tk.Label(self.config_frame, text="Intervalo Tick (s):", fg="#aaaaaa", bg="#3c3f41", font=("Arial", 8)).pack(anchor=tk.W)
+        self.slider_speed = tk.Scale(
+            self.config_frame, from_=0.5, to=3.0, resolution=0.1, orient=tk.HORIZONTAL,
+            bg="#3c3f41", fg="white", highlightthickness=0, troughcolor="#2b2b2b"
+        )
+        self.slider_speed.set(1.5)
+        self.slider_speed.pack(fill=tk.X, pady=(0, 5))
+
         # --- Información del Sistema ---
         self.system_frame = tk.LabelFrame(
             self.sidebar_frame, text=" SISTEMA ", 
@@ -162,11 +197,11 @@ class TrafficGUI:
         if self.running: return
         
         config = ConfiguracionSimulacion(
-            intervalo_tick=self.tick_interval,
-            duracion_verde=15,          # Fases más largas
-            duracion_amarillo=5,
-            probabilidad_llegada=0.15,  # Menos tráfico
-            capacidad_cruce_por_tick=1  # Salen uno por uno para dar espacio
+            intervalo_tick=self.slider_speed.get(),
+            duracion_verde=self.slider_verde.get(),
+            duracion_amarillo=max(2, int(self.slider_verde.get() * 0.3)),
+            probabilidad_llegada=self.slider_prob.get(),
+            capacidad_cruce_por_tick=1
         )
         self.engine = ThreadingEngine(config)
         self.engine.start()
@@ -175,6 +210,9 @@ class TrafficGUI:
         self.btn_threading.config(state=tk.DISABLED)
         self.btn_multiproc.config(state=tk.DISABLED)
         self.btn_stop.config(state=tk.NORMAL)
+        
+        # Bloquear sliders durante ejecución (opcional, para evitar inconsistencias)
+        self._toggle_config_state(tk.DISABLED)
         
         # Iniciar el loop de actualización y animación
         self.update_loop()
@@ -185,10 +223,10 @@ class TrafficGUI:
         if self.running: return
 
         config = ConfiguracionSimulacion(
-            intervalo_tick=self.tick_interval,
-            duracion_verde=15,
-            duracion_amarillo=5,
-            probabilidad_llegada=0.15,
+            intervalo_tick=self.slider_speed.get(),
+            duracion_verde=self.slider_verde.get(),
+            duracion_amarillo=max(2, int(self.slider_verde.get() * 0.3)),
+            probabilidad_llegada=self.slider_prob.get(),
             capacidad_cruce_por_tick=1
         )
         self.engine = MultiprocessingEngine(config)
@@ -199,9 +237,17 @@ class TrafficGUI:
         self.btn_multiproc.config(state=tk.DISABLED)
         self.btn_stop.config(state=tk.NORMAL)
         
+        self._toggle_config_state(tk.DISABLED)
+        
         # Iniciar el loop de actualización y animación
         self.update_loop()
         self._animation_loop()
+
+    def _toggle_config_state(self, state):
+        """Habilita/Deshabilita los controles de configuración."""
+        self.slider_verde.config(state=state)
+        self.slider_prob.config(state=state)
+        self.slider_speed.config(state=state)
 
     def stop_simulation(self):
         """Detiene la simulación."""
@@ -220,6 +266,7 @@ class TrafficGUI:
         self.btn_threading.config(state=tk.NORMAL)
         self.btn_multiproc.config(state=tk.NORMAL)
         self.btn_stop.config(state=tk.DISABLED)
+        self._toggle_config_state(tk.NORMAL)
 
     def _reset_ui_stats(self):
         """Reinicia las etiquetas de estadísticas en la interfaz."""
@@ -255,38 +302,35 @@ class TrafficGUI:
             if via in self.semaforos_graficos:
                 self.canvas.itemconfig(self.semaforos_graficos[via], fill=COLORS.get(color_name, "#ffffff"))
 
-        # 2. Sincronizar Vehículos (Colas)
-        OFFSET = 55 # Espacio entre autos en cola
+        # Ajuste de coordenadas para que el FRENTE del auto se detenga en la línea
+        OFFSET = 65 
         STOP_LINES = {
-            "NORTE": 200, "SUR": 400, "ESTE": 400, "OESTE": 200
+            "NORTE": 210, "SUR": 390, "ESTE": 390, "OESTE": 210
         }
-        # Carriles (Sistema de tráfico por la derecha):
-        # Norte -> Sur: x=270
-        # Sur -> Norte: x=330
-        # Este -> Oeste: y=270
-        # Oeste -> Este: y=330
+        # Entradas y Salidas
         ENTRANCES = {
-            "NORTE": (270, -60), "SUR": (330, 660), "ESTE": (660, 270), "OESTE": (-60, 330)
+            "NORTE": (270, -100), "SUR": (330, 700), "ESTE": (700, 270), "OESTE": (-100, 330)
         }
         EXITS = {
-            "NORTE": (270, 700), "SUR": (330, -100), "ESTE": (-100, 270), "OESTE": (700, 330)
+            "NORTE": (270, 800), "SUR": (330, -200), "ESTE": (-200, 270), "OESTE": (800, 330)
         }
 
         active_ids = []
         
-        # Procesar colas
+        # Procesar colas: Vehículos esperando o llegando
         for via, vehiculos in state.vehiculos_detalle.items():
             for i, v in enumerate(vehiculos):
                 v_id = v.get('id', 0) if isinstance(v, dict) else getattr(v, 'id', 0)
                 active_ids.append(v_id)
                 
-                # Posición objetivo según su lugar en la cola y carril
+                # Posición objetivo en la cola
                 if via == "NORTE": target = (270, STOP_LINES[via] - (i * OFFSET))
                 elif via == "SUR": target = (330, STOP_LINES[via] + (i * OFFSET))
                 elif via == "ESTE": target = (STOP_LINES[via] + (i * OFFSET), 270)
                 elif via == "OESTE": target = (STOP_LINES[via] - (i * OFFSET), 330)
                 
                 if v_id not in self.visual_vehicles:
+                    # Nuevo vehículo detectado
                     start_pos = ENTRANCES[via]
                     self.visual_vehicles[v_id] = {
                         "x": start_pos[0], "y": start_pos[1], 
@@ -294,18 +338,14 @@ class TrafficGUI:
                         "via": via, "state": "QUEUE"
                     }
                 else:
-                    # Si el ID se reutiliza para una vía distinta, teletransportar
-                    if self.visual_vehicles[v_id].get("via") != via:
-                        start_pos = ENTRANCES[via]
-                        self.visual_vehicles[v_id]["x"] = start_pos[0]
-                        self.visual_vehicles[v_id]["y"] = start_pos[1]
-                    
-                    self.visual_vehicles[v_id]["tx"] = target[0]
-                    self.visual_vehicles[v_id]["ty"] = target[1]
-                    self.visual_vehicles[v_id]["via"] = via
-                    self.visual_vehicles[v_id]["state"] = "QUEUE"
+                    # Si ya cruza, no lo regresamos a la cola (evita saltos visuales)
+                    if self.visual_vehicles[v_id]["state"] != "CROSSING":
+                        # Solo actualizar objetivo si sigue en cola
+                        self.visual_vehicles[v_id]["tx"] = target[0]
+                        self.visual_vehicles[v_id]["ty"] = target[1]
+                        self.visual_vehicles[v_id]["state"] = "QUEUE"
 
-        # Procesar cruzando
+        # Procesar cruzando: Vehículos despachados en este tick
         for via, vehiculos in state.vehiculos_en_transito.items():
             for v in vehiculos:
                 v_id = v['id']
@@ -316,7 +356,17 @@ class TrafficGUI:
                     self.visual_vehicles[v_id]["tx"] = exit_pos[0]
                     self.visual_vehicles[v_id]["ty"] = exit_pos[1]
                     self.visual_vehicles[v_id]["state"] = "CROSSING"
-                    self.visual_vehicles[v_id]["via"] = via # Asegurar orientación al cruzar
+
+        # 3. Limpieza de "Fantasmas" y Sincronización Forzada
+        # Si un auto no está en el backend pero sigue en nuestra lista visual como QUEUE,
+        # significa que se despachó pero perdimos el evento o el tick. Forzamos su salida.
+        for v_id, v_data in list(self.visual_vehicles.items()):
+            if v_id not in active_ids:
+                if v_data["state"] == "QUEUE":
+                    # Forzar cruce si desapareció de la cola
+                    v_data["state"] = "CROSSING"
+                    v_data["tx"], v_data["ty"] = EXITS[v_data["via"]]
+                # Si ya está en CROSSING, se borrará solo al llegar a la meta
 
         # 3. Actualizar estadísticas y Log
         self.label_tick.config(text=str(state.tick))
