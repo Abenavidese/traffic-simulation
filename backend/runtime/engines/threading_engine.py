@@ -107,15 +107,18 @@ class ThreadingEngine(BaseEngine):
             
             self._simular_llegada_vehiculos()
             
-            try:
-                # Sincronizar inicio de tick en hilos
-                self._barrier.wait(timeout=2)
-                # Sincronizar fin de tick en hilos
-                self._barrier.wait(timeout=2)
-            except threading.BrokenBarrierError:
-                print("[WARNING] Barrera rota, reiniciando...")
-                self._barrier.reset()
-            
+        # Sincronización fuera del bloqueo para EVITAR DEADLOCK
+        # Los hilos worker necesitan el lock para registrar vehículos antes de llegar a la barrera
+        try:
+            # Sincronizar inicio de tick en hilos
+            self._barrier.wait(timeout=5)
+            # Sincronizar fin de tick en hilos
+            self._barrier.wait(timeout=5)
+        except threading.BrokenBarrierError:
+            print("[WARNING] Barrera rota, reiniciando...")
+            self._barrier.reset()
+        
+        with self._lock:
             return self._construir_estado()
 
     def _simular_llegada_vehiculos(self) -> None:
