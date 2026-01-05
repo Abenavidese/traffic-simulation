@@ -50,6 +50,12 @@ class TrafficGUI:
             height=600
         )
         self.canvas.pack(fill=tk.BOTH, expand=True)
+        self.canvas.bind("<Configure>", self._on_resize)
+        
+        # Dimensiones lógicas (base)
+        self.logical_w = 600
+        self.logical_h = 600
+        self.scale = 1.0
 
         # Etiqueta de título en la barra lateral
         self.sidebar_title = tk.Label(
@@ -135,7 +141,7 @@ class TrafficGUI:
             self.config_frame, from_=0.05, to=0.5, resolution=0.01, orient=tk.HORIZONTAL,
             bg="#3c3f41", fg="white", highlightthickness=0, troughcolor="#2b2b2b"
         )
-        self.slider_prob.set(0.15)
+        self.slider_prob.set(0.25)
         self.slider_prob.pack(fill=tk.X, pady=(0, 5))
 
         # Slider para Velocidad (Tick Interval)
@@ -182,13 +188,13 @@ class TrafficGUI:
         self.log_list = tk.Listbox(self.log_frame, bg="#1e1e1e", fg="#00ff00", font=("Consolas", 8), borderwidth=0, highlightthickness=0)
         self.log_list.pack(fill=tk.BOTH, expand=True)
 
-        # Dibujar los elementos estáticos (calles)
-        self._draw_static_elements()
+        # Dibujar los elementos estáticos (calles) - Se dibuja en _on_resize
+        # self._draw_static_elements()
 
         # --- Elementos Dinámicos ---
         # Diccionario para guardar las referencias de los semáforos en el canvas
         self.semaforos_graficos = {}
-        self._draw_traffic_lights()
+        # self._draw_traffic_lights() - Se dibuja en _on_resize
 
         # Próximo paso: Botones de Control
 
@@ -201,7 +207,7 @@ class TrafficGUI:
             duracion_verde=self.slider_verde.get(),
             duracion_amarillo=max(2, int(self.slider_verde.get() * 0.3)),
             probabilidad_llegada=self.slider_prob.get(),
-            capacidad_cruce_por_tick=1
+            capacidad_cruce_por_tick=3
         )
         self.engine = ThreadingEngine(config)
         self.engine.start()
@@ -227,7 +233,7 @@ class TrafficGUI:
             duracion_verde=self.slider_verde.get(),
             duracion_amarillo=max(2, int(self.slider_verde.get() * 0.3)),
             probabilidad_llegada=self.slider_prob.get(),
-            capacidad_cruce_por_tick=1
+            capacidad_cruce_por_tick=3
         )
         self.engine = MultiprocessingEngine(config)
         self.engine.start()
@@ -300,7 +306,11 @@ class TrafficGUI:
         COLORS = {"VERDE": "#00FF00", "AMARILLO": "#FFFF00", "ROJO": "#FF0000"}
         for via, color_name in state.luces.items():
             if via in self.semaforos_graficos:
-                self.canvas.itemconfig(self.semaforos_graficos[via], fill=COLORS.get(color_name, "#ffffff"))
+                # Asegurar que el objeto aún existe antes de actualizar
+                try:
+                    self.canvas.itemconfig(self.semaforos_graficos[via], fill=COLORS.get(color_name, "#ffffff"))
+                except:
+                    pass
 
         # Ajuste de coordenadas para que el FRENTE del auto se detenga en la línea
         OFFSET = 65 
@@ -320,6 +330,7 @@ class TrafficGUI:
         # Procesar colas: Vehículos esperando o llegando
         for via, vehiculos in state.vehiculos_detalle.items():
             for i, v in enumerate(vehiculos):
+                if i > 6: break # Límitar visualmente la cola para evitar superposición
                 v_id = v.get('id', 0) if isinstance(v, dict) else getattr(v, 'id', 0)
                 active_ids.append(v_id)
                 
@@ -356,6 +367,16 @@ class TrafficGUI:
                     self.visual_vehicles[v_id]["tx"] = exit_pos[0]
                     self.visual_vehicles[v_id]["ty"] = exit_pos[1]
                     self.visual_vehicles[v_id]["state"] = "CROSSING"
+                else:
+                    # CASO "FANTASMA": Vehículo llegó e inmediatamente cruzó
+                    # Lo creamos en la ENTRADA de la vía para que recorra todo el camino
+                    start_pos = ENTRANCES[via]
+
+                    self.visual_vehicles[v_id] = {
+                        "x": start_pos[0], "y": start_pos[1], 
+                        "tx": exit_pos[0], "ty": exit_pos[1], 
+                        "via": via, "state": "CROSSING"
+                    }
 
         # 3. Limpieza de "Fantasmas" y Sincronización Forzada
         # Si un auto no está en el backend pero sigue en nuestra lista visual como QUEUE,
@@ -386,11 +407,10 @@ class TrafficGUI:
             if self.log_list.size() > 50: self.log_list.delete(50, tk.END)
 
     def _animation_loop(self):
-        """Mueve suavemente cada vehículo hacia su objetivo."""
+        """Mueve suavemente cada vehículo hacia su objetivo usando objetos persistentes."""
         if not self.running: return
 
-        # Limpiar canvas dinámico
-        self.canvas.delete("auto")
+        # Ya NO borramos todo con delete("auto") para evitar parpadeos y estelas
 
         to_remove = []
         for v_id, v in self.visual_vehicles.items():
@@ -409,42 +429,94 @@ class TrafficGUI:
                 if v["state"] == "CROSSING" and dist < 1:
                     to_remove.append(v_id)
 
-            # Dibujar el auto (Rectángulo azul con faros)
-            self._render_vehicle(v["x"], v["y"], v["via"])
+            # Actualizar gráficos (crear o mover)
+            self._update_vehicle_graphics(v_id, v)
 
+        # Eliminar vehículos que salieron
         for vid in to_remove:
+            # Borrar gráficos del canvas
+            if "gfx_ids" in self.visual_vehicles[vid]:
+                for gfx_id in self.visual_vehicles[vid]["gfx_ids"]:
+                    self.canvas.delete(gfx_id)
             del self.visual_vehicles[vid]
 
         self.root.after(self.fps_ms, self._animation_loop)
 
-    def _render_vehicle(self, x, y, via):
-        """Dibuja un vehículo centrado en (x,y)."""
-        color = "#3498db"
-        if via in ["NORTE", "SUR"]:
-            w, h = 30, 45
-        else:
-            w, h = 45, 30
-
-        # Cuerpo
-        self.canvas.create_rectangle(
-            x - w/2, y - h/2, x + w/2, y + h/2,
-            fill=color, outline="white", width=2, tags="auto"
-        )
+    def _update_vehicle_graphics(self, v_id, v_data):
+        """Crea o actualiza los objetos gráficos de un vehículo."""
+        x_log, y_log, via = v_data["x"], v_data["y"], v_data["via"]
         
-        # Faros
-        f_size = 5
-        if via == "NORTE": # Hacia el SUR
-            self.canvas.create_oval(x-10, y+h/2-f_size, x-5, y+h/2, fill="yellow", tags="auto")
-            self.canvas.create_oval(x+5, y+h/2-f_size, x+10, y+h/2, fill="yellow", tags="auto")
+        # Escalar coordenadas usando el nuevo sistema centrado
+        x, y = self._to_screen(x_log, y_log)
+        
+        # Calcular dimensiones escaladas
+        if via in ["NORTE", "SUR"]:
+            w_base, h_base = 30, 45
+        else:
+            w_base, h_base = 45, 30
+            
+        w = w_base * self.scale
+        h = h_base * self.scale
+        
+        # Calcular coords del cuerpo (bbox)
+        items_coords = []
+        
+        # 1. Cuerpo
+        items_coords.append((x - w/2, y - h/2, x + w/2, y + h/2))
+        
+        # 2 y 3. Faros
+        f_size = 5 * self.scale
+        offset_y_h = (h/2)
+        offset_x_w = (w/2)
+        offset_10 = 10 * self.scale
+        offset_5 = 5 * self.scale
+
+        if via == "NORTE":
+            items_coords.append((x-offset_10, y+offset_y_h-f_size, x-offset_5, y+offset_y_h))
+            items_coords.append((x+offset_5, y+offset_y_h-f_size, x+offset_10, y+offset_y_h))
         elif via == "SUR":
-            self.canvas.create_oval(x-10, y-h/2, x-5, y-h/2+f_size, fill="yellow", tags="auto")
-            self.canvas.create_oval(x+5, y-h/2, x+10, y-h/2+f_size, fill="yellow", tags="auto")
+            items_coords.append((x-offset_10, y-offset_y_h, x-offset_5, y-offset_y_h+f_size))
+            items_coords.append((x+offset_5, y-offset_y_h, x+offset_10, y-offset_y_h+f_size))
         elif via == "ESTE":
-            self.canvas.create_oval(x-w/2, y-10, x-w/2+f_size, y-5, fill="yellow", tags="auto")
-            self.canvas.create_oval(x-w/2, y+5, x-w/2+f_size, y+10, fill="yellow", tags="auto")
+            items_coords.append((x-offset_x_w, y-offset_10, x-offset_x_w+f_size, y-offset_5))
+            items_coords.append((x-offset_x_w, y+offset_5, x-offset_x_w+f_size, y+offset_10))
         elif via == "OESTE":
-            self.canvas.create_oval(x+w/2-f_size, y-10, x+w/2, y-5, fill="yellow", tags="auto")
-            self.canvas.create_oval(x+w/2-f_size, y+5, x+w/2, y+10, fill="yellow", tags="auto")
+            items_coords.append((x+offset_x_w-f_size, y-offset_10, x+offset_x_w, y-offset_5))
+            items_coords.append((x+offset_x_w-f_size, y+offset_5, x+offset_x_w, y+offset_10))
+
+        # Crear o Actualizar
+        if "gfx_ids" not in v_data:
+            v_data["gfx_ids"] = []
+            # Crear cuerpo
+            body_id = self.canvas.create_rectangle(
+                items_coords[0], 
+                fill="#3498db", outline="white", width=max(1, 2*self.scale), 
+                tags=("auto", f"veh_{v_id}")
+            )
+            v_data["gfx_ids"].append(body_id)
+            
+            # Crear faros
+            for i in range(1, 3):
+                light_id = self.canvas.create_oval(
+                    items_coords[i], 
+                    fill="yellow", outline="", 
+                    tags=("auto", f"veh_{v_id}")
+                )
+                v_data["gfx_ids"].append(light_id)
+        else:
+            # Actualizar coords
+            ids = v_data["gfx_ids"]
+            if len(ids) == len(items_coords):
+                for i, gfx_id in enumerate(ids):
+                    self.canvas.coords(gfx_id, items_coords[i])
+                    # Actualizar ancho de línea si cambia escala (opcional, pesado)
+                    if i == 0: # Cuerpo
+                        self.canvas.itemconfig(gfx_id, width=max(1, 2*self.scale))
+            else:
+                # Si por alguna razón no coinciden (ej. cambio de vía - raro), recrear todo
+                for gfx_id in ids: self.canvas.delete(gfx_id)
+                del v_data["gfx_ids"]
+                self._update_vehicle_graphics(v_id, v_data)
 
     def _create_stat_label(self, text, initial_value):
         """Crea un par de etiquetas (nombre: valor) en el panel de estadísticas."""
@@ -480,107 +552,164 @@ class TrafficGUI:
         """Devuelve azul estándar para todos."""
         return "#3498db"
 
-    def _draw_traffic_lights(self):
-        """Dibuja los 4 semáforos a la derecha de cada carril."""
-        # Reposicionados para estar a la derecha de la vía que llega al cruce
-        POSITIONS = {
-            "NORTE": (210, 175), # Derecha bajando
-            "SUR":   (370, 405), # Derecha subiendo
-            "ESTE":  (405, 210), # Derecha yendo a izquierda
-            "OESTE": (175, 370)  # Derecha yendo a derecha
-        }
+    def _to_screen(self, lx, ly):
+        """Convierte coords lógicas a pantalla (centrado y escalado)."""
+        # (lx - 300) centra relativo al origen lógico (300, 300)
+        # Luego escalamos y movemos al centro real del canvas
+        sx = (lx - 300) * self.scale + self.center_x
+        sy = (ly - 300) * self.scale + self.center_y
+        return sx, sy
 
-        for via, (x, y) in POSITIONS.items():
-            # Dibujar el "poste" o fondo del semáforo
-            self.canvas.create_rectangle(x-5, y-5, x+25, y+25, fill="#111111", outline="#555555")
-            
-            # Dibujar la luz (inicialmente roja)
-            luz = self.canvas.create_oval(
-                x, y, x+20, y+20,
-                fill="#ff0000", # Rojo
-                outline="#333333",
-                tags=f"luz_{via}"
-            )
-            
-            # Guardar referencia para actualizar el color después
-            self.semaforos_graficos[via] = luz
-            
-            # Etiqueta de la vía
-            self.canvas.create_text(
-                x+10, y-15,
-                text=via,
-                fill="white",
-                font=("Arial", 8, "bold")
-            )
+    def _on_resize(self, event):
+        """Maneja el redimensionamiento de la ventana."""
+        if event.width < 100 or event.height < 100: return
+        
+        # Guardar dimensiones actuales del canvas
+        self.canvas_w = event.width
+        self.canvas_h = event.height
+        
+        self.center_x = self.canvas_w / 2
+        self.center_y = self.canvas_h / 2
+        
+        # Calcular escala basada en la altura (para que quepa verticalmente siempre)
+        # Dejamos un margen del 10%
+        target_h = self.logical_h
+        self.scale = (self.canvas_h * 0.9) / target_h
+        
+        self.canvas.delete("all")
+        self._draw_static_elements()
+        self._draw_traffic_lights()
 
     def _draw_static_elements(self):
-        """Dibuja las calles y detalles urbanos (veredas, pasos de cebra)."""
+        """Dibuja las calles extendidas para llenar la pantalla."""
+        s = self.scale
+        # Ancho visual de la calle (sin escalar es 120)
+        road_w = 120 * s
+        half_road = road_w / 2
+        
         # Colores
         color_asfalto = "#333333"
         color_linea = "#ffffff"
         color_linea_doble = "#ffcc00"
         color_cesped = "#2d5a27"
         color_vereda = "#999999"
-
-        w, h = 600, 600
-        road_width = 120
         
-        # 1. Fondo (Césped)
+        cx, cy = self.center_x, self.center_y
+        w, h = self.canvas_w, self.canvas_h
+        
+        # 1. Fondo (Césped completo)
         self.canvas.create_rectangle(0, 0, w, h, fill=color_cesped, outline="")
+        
+        # 2. Asfalto (Cruces + Vías infinitas)
+        # Vertical (Norte-Sur)
+        self.canvas.create_rectangle(cx - half_road, 0, cx + half_road, h, fill=color_asfalto, outline="")
+        # Horizontal (Este-Oeste)
+        self.canvas.create_rectangle(0, cy - half_road, w, cy + half_road, fill=color_asfalto, outline="")
+        
+        # 3. Veredas (Esquinas del cruce)
+        # Calculamos donde EMPIEZAN las veredas desde el centro
+        corner_offset = half_road
+        
+        # Función para dibujar bloque de vereda y sus bordes
+        def draw_corner(x_start, y_start, x_end, y_end):
+            self.canvas.create_rectangle(x_start, y_start, x_end, y_end, fill=color_vereda, outline="#777777")
+            
+        # NO (Top-Left)
+        draw_corner(0, 0, cx - corner_offset, cy - corner_offset)
+        # NE (Top-Right)
+        draw_corner(cx + corner_offset, 0, w, cy - corner_offset)
+        # SO (Bottom-Left)
+        draw_corner(0, cy + corner_offset, cx - corner_offset, h)
+        # SE (Bottom-Right)
+        draw_corner(cx + corner_offset, cy + corner_offset, w, h)
 
-        # 2. Veredas (Bloques en las esquinas)
-        corner_size = (w/2) - (road_width/2)
-        # Esquina NO
-        self.canvas.create_rectangle(0, 0, corner_size, corner_size, fill=color_vereda, outline="#777777")
-        # Esquina NE
-        self.canvas.create_rectangle(w - corner_size, 0, w, corner_size, fill=color_vereda, outline="#777777")
-        # Esquina SO
-        self.canvas.create_rectangle(0, h - corner_size, corner_size, h, fill=color_vereda, outline="#777777")
-        # Esquina SE
-        self.canvas.create_rectangle(w - corner_size, h - corner_size, w, h, fill=color_vereda, outline="#777777")
-
-        # 3. Asfalto (Calles)
-        self.canvas.create_rectangle(0, corner_size, w, h - corner_size, fill=color_asfalto, outline="")
-        self.canvas.create_rectangle(corner_size, 0, w - corner_size, h, fill=color_asfalto, outline="")
-
-        # 4. Pasos de Cebra
-        def draw_crosswalk(x1, y1, x2, y2, vertical=True):
+        # 4. Pasos de Cebra (Se mantienen en posición lógica fija relativa al centro)
+        cw_dist = 60 * s # Distancia del centro al inicio de cebra (aprox 120/2)
+        cw_len = 25 * s  # Largo de la cebra
+        
+        def draw_zebra(x, y, vertical=True):
             steps = 6
+            step_w = road_w / steps
             for i in range(steps):
                 if vertical:
-                    offset = i * (road_width / steps)
-                    self.canvas.create_rectangle(x1 + offset + 2, y1, x1 + offset + 15, y2, fill="white", outline="")
+                    off = i * step_w
+                    self.canvas.create_rectangle(
+                        x + off + 2*s, y, 
+                        x + off + step_w - 2*s, y + cw_len, 
+                        fill="white", outline=""
+                    )
                 else:
-                    offset = i * (road_width / steps)
-                    self.canvas.create_rectangle(x1, y1 + offset + 2, x2, y1 + offset + 15, fill="white", outline="")
+                    off = i * step_w
+                    self.canvas.create_rectangle(
+                        x, y + off + 2*s, 
+                        x + cw_len, y + off + step_w - 2*s, 
+                        fill="white", outline=""
+                    )
 
-        # Norte
-        draw_crosswalk(corner_size, corner_size - 25, w - corner_size, corner_size - 10)
-        # Sur
-        draw_crosswalk(corner_size, h - corner_size + 10, w - corner_size, h - corner_size + 25)
-        # Este
-        draw_crosswalk(w - corner_size + 10, corner_size, w - corner_size + 25, h - corner_size, vertical=False)
-        # Oeste
-        draw_crosswalk(corner_size - 25, corner_size, corner_size - 10, h - corner_size, vertical=False)
-
-        # 5. Líneas Amarillas (Doble línea central)
-        # Horizontal
-        self.canvas.create_line(0, h/2 - 2, corner_size - 30, h/2 - 2, fill=color_linea_doble, width=2)
-        self.canvas.create_line(0, h/2 + 2, corner_size - 30, h/2 + 2, fill=color_linea_doble, width=2)
-        self.canvas.create_line(w - corner_size + 30, h/2 - 2, w, h/2 - 2, fill=color_linea_doble, width=2)
-        self.canvas.create_line(w - corner_size + 30, h/2 + 2, w, h/2 + 2, fill=color_linea_doble, width=2)
+        # Dibujar cebras (posicionadas usando offsets del centro)
+        # Norte (Arriba del centro)
+        draw_zebra(cx - half_road, cy - half_road - cw_len)
+        # Sur (Abajo del centro)
+        draw_zebra(cx - half_road, cy + half_road)
+        # Este (Derecha del centro)
+        draw_zebra(cx + half_road, cy - half_road, vertical=False)
+        # Oeste (Izquierda del centro)
+        draw_zebra(cx - half_road - cw_len, cy - half_road, vertical=False)
         
-        # Vertical
-        self.canvas.create_line(w/2 - 2, 0, w/2 - 2, corner_size - 30, fill=color_linea_doble, width=2)
-        self.canvas.create_line(w/2 + 2, 0, w/2 + 2, corner_size - 30, fill=color_linea_doble, width=2)
-        self.canvas.create_line(w/2 - 2, h - corner_size + 30, w/2 - 2, h, fill=color_linea_doble, width=2)
-        self.canvas.create_line(w/2 + 2, h - corner_size + 30, w/2 + 2, h, fill=color_linea_doble, width=2)
+        # 5. Líneas de detención (Antes de las cebras)
+        line_w = max(2, 4*s)
+        # Norte
+        self.canvas.create_line(cx - half_road, cy - half_road - cw_len - 5*s, cx + half_road, cy - half_road - cw_len - 5*s, fill=color_linea, width=line_w)
+        # Sur
+        self.canvas.create_line(cx - half_road, cy + half_road + cw_len + 5*s, cx + half_road, cy + half_road + cw_len + 5*s, fill=color_linea, width=line_w)
+        # Este
+        self.canvas.create_line(cx + half_road + cw_len + 5*s, cy - half_road, cx + half_road + cw_len + 5*s, cy + half_road, fill=color_linea, width=line_w)
+        # Oeste
+        self.canvas.create_line(cx - half_road - cw_len - 5*s, cy - half_road, cx - half_road - cw_len - 5*s, cy + half_road, fill=color_linea, width=line_w)
 
-        # 6. Líneas de detención (Anchas antes de la cebra)
-        self.canvas.create_line(corner_size, corner_size - 5, w - corner_size, corner_size - 5, fill=color_linea, width=4)
-        self.canvas.create_line(corner_size, h - corner_size + 5, w - corner_size, h - corner_size + 5, fill=color_linea, width=4)
-        self.canvas.create_line(w - corner_size + 5, corner_size, w - corner_size + 5, h - corner_size, fill=color_linea, width=4)
-        self.canvas.create_line(corner_size - 5, corner_size, corner_size - 5, h - corner_size, fill=color_linea, width=4)
+        # 6. Líneas Amarillas (Infinitas)
+        ylw = max(1, 2*s)
+        # Horizontal Oeste
+        self.canvas.create_line(0, cy - 3*s, cx - half_road - cw_len - 10*s, cy - 3*s, fill=color_linea_doble, width=ylw)
+        self.canvas.create_line(0, cy + 3*s, cx - half_road - cw_len - 10*s, cy + 3*s, fill=color_linea_doble, width=ylw)
+        # Horizontal Este
+        self.canvas.create_line(cx + half_road + cw_len + 10*s, cy - 3*s, w, cy - 3*s, fill=color_linea_doble, width=ylw)
+        self.canvas.create_line(cx + half_road + cw_len + 10*s, cy + 3*s, w, cy + 3*s, fill=color_linea_doble, width=ylw)
+        # Vertical Norte
+        self.canvas.create_line(cx - 3*s, 0, cx - 3*s, cy - half_road - cw_len - 10*s, fill=color_linea_doble, width=ylw)
+        self.canvas.create_line(cx + 3*s, 0, cx + 3*s, cy - half_road - cw_len - 10*s, fill=color_linea_doble, width=ylw)
+        # Vertical Sur
+        self.canvas.create_line(cx - 3*s, cy + half_road + cw_len + 10*s, cx - 3*s, h, fill=color_linea_doble, width=ylw)
+        self.canvas.create_line(cx + 3*s, cy + half_road + cw_len + 10*s, cx + 3*s, h, fill=color_linea_doble, width=ylw)
+
+    def _draw_traffic_lights(self):
+        """Dibuja los semáforos usando el nuevo sistema de coordenadas."""
+        s = self.scale
+        # Posiciones lógicas originales
+        POSITIONS = {
+            "NORTE": (210, 175),
+            "SUR":   (370, 405),
+            "ESTE":  (405, 210),
+            "OESTE": (175, 370)
+        }
+        self.semaforos_graficos = {}
+        for via, (lx, ly) in POSITIONS.items():
+            x, y = self._to_screen(lx, ly)
+            
+            r_luz = 20 * s
+            
+            self.canvas.create_rectangle(x-5*s, y-5*s, x+25*s, y+25*s, fill="#111111", outline="#555555")
+            
+            luz = self.canvas.create_oval(
+                x, y, x+r_luz, y+r_luz,
+                fill="#ff0000", outline="#333333", tags=f"luz_{via}"
+            )
+            self.semaforos_graficos[via] = luz
+            
+            self.canvas.create_text(
+                x + 10*s, y - 15*s,
+                text=via, fill="white", font=("Arial", max(6, int(8*s)), "bold")
+            )
 
 if __name__ == "__main__":
     root = tk.Tk()
